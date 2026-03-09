@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Кафе | Тестовый онлайн-заказ</title>
+  <style>
+    :root {
+      --tg-bg-color: var(--tg-theme-bg-color, #f7efe4);
+      --tg-text-color: var(--tg-theme-text-color, #231913);
+      --tg-hint-color: var(--tg-theme-hint-color, #7c6858);
+      --tg-button-color: var(--tg-theme-button-color, #19624a);
+      --tg-button-text-color: var(--tg-theme-button-text-color, #ffffff);
+      --surface: rgba(255, 251, 246, 0.92);
+      --surface-strong: rgba(255, 247, 239, 0.98);
+      --line: rgba(88, 59, 41, 0.12);
+      --shadow: 0 22px 60px rgba(45, 31, 22, 0.14);
+      --radius-xl: 30px;
+      --radius-lg: 24px;
+      --radius-md: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--tg-text-color);
+      background:
+        radial-gradient(circle at top left, rgba(244, 214, 174, 0.45), transparent 24%),
+        radial-gradient(circle at bottom right, rgba(193, 223, 206, 0.42), transparent 30%),
+        linear-gradient(180deg, #f7efe4 0%, #efdec7 58%, #ead9c4 100%);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(120deg, rgba(255, 255, 255, 0.08), transparent 35%),
+        linear-gradient(320deg, rgba(76, 42, 27, 0.08), transparent 32%);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+      transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+      transform: none;
+    }
+
+    .app {
+      width: min(1180px, calc(100% - 24px));
+      margin: 0 auto;
+      padding: 18px 0 140px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 30px;
+      border-radius: 34px;
+      background:
+        linear-gradient(145deg, rgba(66, 41, 29, 0.98), rgba(24, 61, 49, 0.96));
+      color: #fff8ef;
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      right: -36px;
+      top: -60px;
+      border-radius: 50%;
+      background: rgba(255, 248, 239, 0.08);
+      filter: blur(4px);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(255, 248, 239, 0.78);
+    }
+
+    h1,
+    h2,
+    h3,
+    h4 {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    h1 {
+      max-width: 760px;
+      font-size: clamp(34px, 5vw, 60px);
+      line-height: 0.96;
+    }
+
+    .hero-copy {
+      max-width: 700px;
+      margin-top: 16px;
+      color: rgba(255, 248, 239, 0.84);
+      line-height: 1.62;
+      font-size: 16px;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .badge {
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 248, 239, 0.12);
+      border: 1px solid rgba(255, 248, 239, 0.12);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .status-bar {
+      display: grid;
+      grid-template-columns: 1.3fr 0.8fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid rgba(255, 255, 255, 0.32);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      padding: 22px;
+      backdrop-filter: blur(16px);
+    }
+
+    .panel p {
+      margin: 0;
+      line-height: 1.55;
+      color: #5f4c40;
+    }
+
+    .panel-title {
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      color: var(--tg-hint-color);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    .test-note {
+      display: grid;
+      gap: 8px;
+      color: #4d3a2f;
+    }
+
+    .test-note strong {
+      font-size: 20px;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .user-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 14px 16px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.6);
+      border: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: rgba(25, 98, 74, 0.12);
+      color: #205441;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .category-rail {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      gap: 10px;
+      overflow: auto;
+      padding: 10px 0 14px;
+      margin-bottom: 10px;
+      scrollbar-width: none;
+    }
+
+    .category-rail::-webkit-scrollbar {
+      display: none;
+    }
+
+    .category-link {
+      white-space: nowrap;
+      padding: 12px 16px;
+      border-radius: 999px;
+      background: rgba(255, 251, 246, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      box-shadow: 0 10px 24px rgba(45, 31, 22, 0.1);
+      font-size: 14px;
+      font-weight: 700;
+      color: #4d3a2f;
+    }
+
+    .section {
+      margin-bottom: 16px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+
+    .section-head p {
+      margin: 8px 0 0;
+      color: var(--tg-hint-color);
+      line-height: 1.55;
+    }
+
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      display: grid;
+      grid-template-rows: 180px 1fr;
+      overflow: hidden;
+      border-radius: var(--radius-lg);
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+    }
+
+    .card img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #ebded1;
+    }
+
+    .card-body {
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+    }
+
+    .card-body p {
+      margin: 0;
+      color: #624c3d;
+      line-height: 1.52;
+      font-size: 14px;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .price {
+      font-size: 22px;
+      font-weight: 800;
+      color: #1c513d;
+    }
+
+    .add-button,
+    .primary-button,
+    .qty-button {
+      color: var(--tg-button-text-color);
+      background: linear-gradient(135deg, var(--tg-button-color), #0f4534);
+      box-shadow: 0 12px 24px rgba(25, 98, 74, 0.24);
+    }
+
+    .add-button {
+      min-width: 112px;
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-weight: 800;
+    }
+
+    .order-summary {
+      display: none;
+      margin-bottom: 16px;
+    }
+
+    .order-summary.visible {
+      display: block;
+    }
+
+    .summary-card {
+      display: grid;
+      gap: 8px;
+      padding: 20px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(24, 61, 49, 0.96), rgba(38, 77, 63, 0.96));
+      color: #fff8ef;
+      box-shadow: var(--shadow);
+    }
+
+    .summary-card p {
+      margin: 0;
+      color: rgba(255, 248, 239, 0.84);
+    }
+
+    .cart-fab {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 20px;
+      border-radius: 999px;
+      color: var(--tg-button-text-color);
+      background: linear-gradient(135deg, #0f4534, var(--tg-button-color));
+      box-shadow: 0 20px 44px rgba(25, 98, 74, 0.32);
+    }
+
+    .cart-count {
+      min-width: 32px;
+      height: 32px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.16);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: end;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(17, 12, 8, 0.48);
+      z-index: 45;
+    }
+
+    .modal.open {
+      display: flex;
+    }
+
+    .modal-sheet {
+      width: min(760px, 100%);
+      max-height: min(84vh, 820px);
+      overflow: auto;
+      padding: 24px;
+      border-radius: 30px;
+      background: linear-gradient(180deg, rgba(255, 251, 246, 0.98), rgba(248, 241, 234, 0.98));
+      box-shadow: 0 24px 70px rgba(34, 22, 15, 0.3);
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .modal-head p {
+      margin: 8px 0 0;
+      color: var(--tg-hint-color);
+    }
+
+    .ghost-button {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(88, 59, 41, 0.08);
+      color: #4f3c30;
+      font-weight: 700;
+    }
+
+    .cart-items {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .cart-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      padding: 16px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+    }
+
+    .cart-item p {
+      margin: 4px 0 0;
+      color: #6a5648;
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    .qty-panel {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      align-self: center;
+      padding: 6px;
+      border-radius: 999px;
+      background: rgba(25, 98, 74, 0.08);
+    }
+
+    .qty-button {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .qty-value {
+      min-width: 26px;
+      text-align: center;
+      font-weight: 800;
+    }
+
+    .checkout-card {
+      padding: 18px;
+      border-radius: 22px;
+      background: #22342b;
+      color: #fff8ef;
+    }
+
+    .checkout-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .checkout-note {
+      margin: 0 0 16px;
+      color: rgba(255, 248, 239, 0.76);
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .primary-button {
+      width: 100%;
+      padding: 16px;
+      border-radius: 18px;
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    .empty-state {
+      padding: 28px 18px;
+      text-align: center;
+      border-radius: 20px;
+      border: 1px dashed rgba(88, 59, 41, 0.28);
+      color: #796759;
+      background: rgba(255, 255, 255, 0.4);
+    }
+
+    .loader,
+    .error-box {
+      padding: 28px 18px;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid var(--line);
+      text-align: center;
+      color: #644f42;
+      box-shadow: var(--shadow);
+    }
+
+    .error-box {
+      color: #7a2d2d;
+    }
+
+    .toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-10px);
+      z-index: 60;
+      width: min(720px, calc(100% - 24px));
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(34, 52, 43, 0.96);
+      color: #fff8ef;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .toast.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .toast.error {
+      background: rgba(130, 39, 30, 0.96);
+    }
+
+    @media (max-width: 860px) {
+      .status-bar {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .hero,
+      .panel,
+      .modal-sheet {
+        padding: 20px;
+      }
+
+      .section-head,
+      .modal-head {
+        flex-direction: column;
+        align-items: start;
+      }
+
+      .cart-item {
+        grid-template-columns: 1fr;
+      }
+
+      .cart-fab {
+        left: 12px;
+        right: 12px;
+        justify-content: space-between;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="hero">
+      <p class="eyebrow">Telegram Mini App • Предфинальная сборка</p>
+      <h1>Онлайн-заказ для кафе с тестовой оплатой и уведомлениями в Telegram</h1>
+      <p class="hero-copy">
+        Выберите блюда из полного меню, оформите тестовый заказ и дождитесь статуса
+        от кассира прямо в Telegram. Реальная СБП-оплата будет подключена следующим этапом.
+      </p>
+      <div class="hero-meta">
+        <span class="badge">Полное меню</span>
+        <span class="badge">Самовывоз</span>
+        <span class="badge">СБП тестовый сценарий</span>
+      </div>
+    </section>
+
+    <section class="status-bar">
+      <div class="panel test-note">
+        <span class="panel-title">Режим проверки</span>
+        <strong>Оплата сейчас тестовая</strong>
+        <p>
+          После оформления заказ автоматически переходит в статус оплаченного тестового заказа.
+          Кассир получает его в Telegram и может отметить этапы приготовления.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="panel-title">Пользователь Telegram</span>
+        <div class="user-pill" id="user-pill">
+          <span class="chip" id="checkout-chip">Загружаем профиль...</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="order-summary" id="order-summary">
+      <div class="summary-card">
+        <h2 id="summary-title">Заказ оформлен</h2>
+        <p id="summary-text"></p>
+      </div>
+    </section>
+
+    <nav class="category-rail" id="category-rail"></nav>
+
+    <main id="menu-root">
+      <div class="loader">Загружаем меню кафе...</div>
+    </main>
+  </div>
+
+  <button class="cart-fab" id="cart-button" type="button">
+    <strong>Корзина</strong>
+    <span class="cart-count" id="cart-count">0</span>
+  </button>
+
+  <div class="modal" id="cart-modal">
+    <div class="modal-sheet">
+      <div class="modal-head">
+        <div>
+          <h2>Ваш заказ</h2>
+          <p>Проверьте позиции перед тестовым оформлением.</p>
+        </div>
+        <button class="ghost-button" id="close-modal" type="button">Закрыть</button>
+      </div>
+
+      <div class="cart-items" id="cart-items"></div>
+
+      <div class="checkout-card">
+        <div class="checkout-row">
+          <span>Итого</span>
+          <strong id="cart-total">0 ₽</strong>
+        </div>
+        <p class="checkout-note">
+          Нажатие кнопки оформит тестовый заказ. Деньги не списываются, заказ сразу уйдёт кассиру в Telegram как оплаченный тестовый.
+        </p>
+        <button class="primary-button" id="pay-button" type="button">Оплатить через СБП (тест)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    const menuRoot = document.getElementById("menu-root");
+    const categoryRail = document.getElementById("category-rail");
+    const cartButton = document.getElementById("cart-button");
+    const cartCount = document.getElementById("cart-count");
+    const cartModal = document.getElementById("cart-modal");
+    const closeModalButton = document.getElementById("close-modal");
+    const cartItemsContainer = document.getElementById("cart-items");
+    const cartTotalElement = document.getElementById("cart-total");
+    const payButton = document.getElementById("pay-button");
+    const toast = document.getElementById("toast");
+    const userPill = document.getElementById("user-pill");
+    const checkoutChip = document.getElementById("checkout-chip");
+    const orderSummary = document.getElementById("order-summary");
+    const summaryText = document.getElementById("summary-text");
+
+    let categories = [];
+    const cart = new Map();
+    let toastTimer = null;
+
+    function formatPrice(value) {
+      return `${new Intl.NumberFormat("ru-RU").format(value)} ₽`;
+    }
+
+    function showToast(message, type = "default") {
+      toast.textContent = message;
+      toast.className = `toast visible ${type === "error" ? "error" : ""}`.trim();
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => {
+        toast.className = "toast";
+      }, 3200);
+    }
+
+    function flattenItems() {
+      return categories.flatMap((category) => category.items || []);
+    }
+
+    function findMenuItem(itemId) {
+      return flattenItems().find((item) => item.id === Number(itemId));
+    }
+
+    function getTelegramUserId() {
+      const fromTelegram = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
+        ? Number(tg.initDataUnsafe.user.id)
+        : 0;
+
+      if (fromTelegram) {
+        return fromTelegram;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      return Number(params.get("user_id") || 0);
+    }
+
+    function getDisplayName() {
+      if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+        const user = tg.initDataUnsafe.user;
+        return [user.first_name, user.last_name].filter(Boolean).join(" ") || `ID ${user.id}`;
+      }
+      return null;
+    }
+
+    function updateUserBadge() {
+      const userId = getTelegramUserId();
+      const name = getDisplayName();
+      if (userId) {
+        userPill.innerHTML = `
+          <span class="chip">Telegram ID: ${userId}</span>
+          ${name ? `<span>${name}</span>` : ""}
+        `;
+        checkoutChip.textContent = "Оформление доступно";
+        return;
+      }
+
+      userPill.innerHTML = `
+        <span class="chip">Локальный режим</span>
+        <span>Для теста без Telegram используйте параметр ?user_id=123456</span>
+      `;
+      checkoutChip.textContent = "Требуется Telegram или ?user_id";
+    }
+
+    function totalItemsCount() {
+      let total = 0;
+      cart.forEach((quantity) => {
+        total += quantity;
+      });
+      return total;
+    }
+
+    function totalPrice() {
+      return Array.from(cart.entries()).reduce((sum, [itemId, quantity]) => {
+        const item = findMenuItem(itemId);
+        return item ? sum + item.price * quantity : sum;
+      }, 0);
+    }
+
+    function updateCartBadge() {
+      cartCount.textContent = String(totalItemsCount());
+    }
+
+    function addToCart(itemId) {
+      const current = cart.get(itemId) || 0;
+      cart.set(itemId, current + 1);
+      updateCartBadge();
+      if (tg && tg.HapticFeedback) {
+        tg.HapticFeedback.impactOccurred("light");
+      }
+      showToast("Позиция добавлена в корзину.");
+    }
+
+    function changeQuantity(itemId, delta) {
+      const current = cart.get(itemId) || 0;
+      const next = current + delta;
+      if (next <= 0) {
+        cart.delete(itemId);
+      } else {
+        cart.set(itemId, next);
+      }
+      updateCartBadge();
+      renderCart();
+    }
+
+    function renderCategoryRail() {
+      categoryRail.innerHTML = "";
+      categories.forEach((category) => {
+        const link = document.createElement("a");
+        link.className = "category-link";
+        link.href = `#category-${category.slug}`;
+        link.textContent = category.title;
+        categoryRail.appendChild(link);
+      });
+    }
+
+    function renderMenu() {
+      if (!categories.length) {
+        menuRoot.innerHTML = '<div class="error-box">Меню пока пустое.</div>';
+        categoryRail.innerHTML = "";
+        return;
+      }
+
+      renderCategoryRail();
+      menuRoot.innerHTML = categories.map((category) => `
+        <section class="panel section" id="category-${category.slug}">
+          <div class="section-head">
+            <div>
+              <span class="panel-title">${category.title}</span>
+              <h2>${category.title}</h2>
+              <p>${category.subtitle || ""}</p>
+            </div>
+            <div class="chip">${category.items.length} поз.</div>
+          </div>
+          <div class="menu-grid">
+            ${category.items.map((item) => `
+              <article class="card">
+                <img src="${item.image_url}" alt="${item.name}" loading="lazy" />
+                <div class="card-body">
+                  <div>
+                    <h3>${item.name}</h3>
+                    <p>${item.description}</p>
+                  </div>
+                  <div class="card-footer">
+                    <span class="price">${formatPrice(item.price)}</span>
+                    <button class="add-button" type="button" data-item-id="${item.id}">Добавить</button>
+                  </div>
+                </div>
+              </article>
+            `).join("")}
+          </div>
+        </section>
+      `).join("");
+    }
+
+    function renderCart() {
+      const entries = Array.from(cart.entries());
+      cartItemsContainer.innerHTML = "";
+
+      if (!entries.length) {
+        cartItemsContainer.innerHTML = `
+          <div class="empty-state">
+            Корзина пока пустая. Добавьте блюда из меню, чтобы оформить тестовый заказ.
+          </div>
+        `;
+        cartTotalElement.textContent = formatPrice(0);
+        return;
+      }
+
+      entries.forEach(([itemId, quantity]) => {
+        const item = findMenuItem(itemId);
+        if (!item) {
+          return;
+        }
+        const row = document.createElement("div");
+        row.className = "cart-item";
+        row.innerHTML = `
+          <div>
+            <h4>${item.name}</h4>
+            <p>${item.description}</p>
+            <p>Сумма: ${formatPrice(item.price * quantity)}</p>
+          </div>
+          <div class="qty-panel">
+            <button class="qty-button" type="button" data-action="decrease" data-item-id="${item.id}">−</button>
+            <span class="qty-value">${quantity}</span>
+            <button class="qty-button" type="button" data-action="increase" data-item-id="${item.id}">+</button>
+          </div>
+        `;
+        cartItemsContainer.appendChild(row);
+      });
+
+      cartTotalElement.textContent = formatPrice(totalPrice());
+    }
+
+    function openCart() {
+      renderCart();
+      cartModal.classList.add("open");
+    }
+
+    function closeCart() {
+      cartModal.classList.remove("open");
+    }
+
+    function showOrderSummary(order) {
+      orderSummary.classList.add("visible");
+      summaryText.textContent = `Заказ №${order.public_order_number} оформлен как тестовый. Дальнейшие статусы придут в Telegram.`;
+      orderSummary.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function fetchMenu() {
+      const response = await fetch("/api/menu");
+      if (!response.ok) {
+        throw new Error("Не удалось загрузить меню.");
+      }
+      const payload = await response.json();
+      categories = payload.categories || [];
+      renderMenu();
+    }
+
+    async function checkout() {
+      const userId = getTelegramUserId();
+      if (!userId) {
+        showToast("Откройте приложение из Telegram или добавьте ?user_id=123456.", "error");
+        return;
+      }
+
+      const items = Array.from(cart.entries()).map(([itemId, quantity]) => ({
+        item_id: Number(itemId),
+        quantity
+      }));
+
+      if (!items.length) {
+        showToast("Корзина пустая.", "error");
+        return;
+      }
+
+      payButton.disabled = true;
+
+      try {
+        showToast("Создаём тестовый заказ...");
+
+        const createResponse = await fetch("/api/create_order", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            items
+          })
+        });
+
+        if (!createResponse.ok) {
+          throw new Error("Не удалось создать заказ.");
+        }
+
+        const order = await createResponse.json();
+        showToast("Подтверждаем тестовую оплату...");
+
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+        const confirmResponse = await fetch(`/api/orders/${order.order_id}/confirm-payment`, {
+          method: "POST"
+        });
+
+        if (!confirmResponse.ok) {
+          throw new Error("Не удалось подтвердить тестовую оплату.");
+        }
+
+        const confirmedOrder = await confirmResponse.json();
+        cart.clear();
+        updateCartBadge();
+        renderCart();
+        closeCart();
+        showOrderSummary(confirmedOrder);
+
+        if (tg && tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred("success");
+        }
+
+        showToast(`Тестовый заказ №${confirmedOrder.public_order_number} оформлен.`);
+      } catch (error) {
+        showToast(error.message || "Ошибка оформления заказа.", "error");
+      } finally {
+        payButton.disabled = false;
+      }
+    }
+
+    menuRoot.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-item-id]");
+      if (!button) {
+        return;
+      }
+      addToCart(Number(button.dataset.itemId));
+    });
+
+    cartItemsContainer.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action][data-item-id]");
+      if (!button) {
+        return;
+      }
+      const delta = button.dataset.action === "increase" ? 1 : -1;
+      changeQuantity(Number(button.dataset.itemId), delta);
+    });
+
+    cartButton.addEventListener("click", openCart);
+    closeModalButton.addEventListener("click", closeCart);
+    cartModal.addEventListener("click", (event) => {
+      if (event.target === cartModal) {
+        closeCart();
+      }
+    });
+    payButton.addEventListener("click", checkout);
+
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      document.documentElement.style.colorScheme = tg.colorScheme || "light";
+    }
+
+    updateUserBadge();
+    fetchMenu().catch((error) => {
+      menuRoot.innerHTML = `<div class="error-box">${error.message || "Не удалось загрузить меню."}</div>`;
+      showToast(error.message || "Не удалось загрузить интерфейс.", "error");
+    });
+  </script>
+</body>
+</html>
