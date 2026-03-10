@@ -666,10 +666,10 @@ def format_order_for_cashier(order: Order) -> str:
         for item in order.items
     )
     status_labels = {
-        "created": "Создан",
-        "paid": "Оплачен",
-        "preparing": "Готовится",
-        "ready": "Готов",
+        "created": "🆕 Создан",
+        "paid": "💳 Оплачен",
+        "preparing": "🟡 Готовится",
+        "ready": "🟢 Готов",
     }
     return (
         f"<b>Заказ №{order.public_order_number}</b>\n"
@@ -687,11 +687,11 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Готовится",
+                        text="🟡 Готовится",
                         callback_data=f"order:preparing:{order_id}",
                     ),
                     InlineKeyboardButton(
-                        text="Готов",
+                        text="🟢 Готов",
                         callback_data=f"order:ready:{order_id}",
                     ),
                 ]
@@ -702,7 +702,7 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Готов",
+                        text="🟢 Готов к выдаче",
                         callback_data=f"order:ready:{order_id}",
                     )
                 ]
@@ -838,7 +838,7 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
                 format_order_for_cashier(order),
                 reply_markup=build_cashier_keyboard(order.id, order.status),
             )
-            await callback.answer("Статус обновлен: Готовится.")
+            await callback.answer("🟡 Готовится")
             return
 
         if action == "ready":
@@ -849,10 +849,10 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             _ = order.items
             await notify_customer(
                 order,
-                f"Заказ №{order.public_order_number} готов и ожидает вас в ресторане.",
+                f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!",
             )
             await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
-            await callback.answer("Статус обновлен: Готов.")
+            await callback.answer("🟢 Готов!")
             return
 
     await callback.answer("Неизвестное действие.")
