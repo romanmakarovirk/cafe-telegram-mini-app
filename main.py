@@ -858,11 +858,33 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
     await callback.answer("Неизвестное действие.")
 
 
+async def _keep_alive_ping():
+    """Self-ping to prevent Render free tier from sleeping (every 14 min)."""
+    import aiohttp
+
+    await asyncio.sleep(60)  # wait for full startup
+    url = f"{APP_BASE_URL}/healthz"
+    logging.info("Keep-alive started: pinging %s every 14 min", url)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    logging.info("Keep-alive ping: %s", r.status)
+        except Exception as exc:
+            logging.warning("Keep-alive ping failed: %s", exc)
+        await asyncio.sleep(14 * 60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global bot, bot_polling_task
 
     initialize_database()
+
+    # Keep-alive self-ping (only when deployed with a real URL)
+    keep_alive_task = None
+    if APP_BASE_URL and not APP_BASE_URL.startswith("http://127.0.0.1"):
+        keep_alive_task = asyncio.create_task(_keep_alive_ping())
 
     if BOT_TOKEN:
         bot = Bot(
@@ -883,6 +905,10 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        if keep_alive_task is not None:
+            keep_alive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await keep_alive_task
         if bot_polling_task is not None:
             bot_polling_task.cancel()
             with suppress(asyncio.CancelledError):
