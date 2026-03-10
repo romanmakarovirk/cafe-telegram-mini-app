@@ -840,7 +840,94 @@
       box-shadow: 0 8px 24px rgba(39, 174, 96, 0.3);
     }
 
+    /* Working Hours */
+    .hours-badge { display: inline-flex; align-items: center; gap: 6px; }
+    .hours-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #2ecc71;
+      box-shadow: 0 0 6px rgba(46, 204, 113, 0.5);
+      animation: hours-pulse 2s ease-in-out infinite;
+    }
+    .hours-dot.closed { background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.5); animation: none; }
+    @keyframes hours-pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+    .closed-overlay {
+      display: none; position: fixed; inset: 0; z-index: 9999;
+      background: rgba(17, 12, 8, 0.75); backdrop-filter: blur(6px);
+      align-items: center; justify-content: center; padding: 24px;
+    }
+    .closed-overlay.visible { display: flex; }
+    .closed-card {
+      max-width: 400px; width: 100%; padding: 32px 28px; border-radius: 28px;
+      background: linear-gradient(180deg, rgba(255,251,246,.99), rgba(248,241,234,.99));
+      box-shadow: 0 24px 70px rgba(34,22,15,.3); text-align: center;
+    }
+    .closed-card h2 {
+      font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 22px;
+      margin-bottom: 12px; color: #2d1f14;
+    }
+    .closed-card p { margin: 0 0 8px; color: #6a5648; line-height: 1.55; font-size: 15px; }
+    .closed-card .hours-line {
+      margin-top: 16px; padding: 12px 16px; border-radius: 14px;
+      background: rgba(25, 98, 74, 0.08); color: #205441; font-weight: 700; font-size: 14px;
+    }
+
+    .closing-warning {
+      display: none; padding: 12px 16px; border-radius: 16px;
+      background: rgba(230, 126, 34, 0.12); border: 1px solid rgba(230, 126, 34, 0.2);
+      color: #8B5A2B; font-size: 14px; font-weight: 600; margin-bottom: 12px; text-align: center;
+    }
+    .closing-warning.visible { display: block; }
+
+    /* Review Card */
+    .review-card {
+      margin-top: 16px; padding: 20px; border-radius: 22px;
+      background: var(--surface); border: 1px solid var(--line);
+      box-shadow: 0 8px 24px rgba(45, 31, 22, 0.08);
+      opacity: 0; transform: translateY(12px);
+      transition: opacity 0.4s ease, transform 0.4s ease;
+    }
+    .review-card.visible { opacity: 1; transform: translateY(0); }
+    .review-card h3 {
+      font-family: 'Montserrat', sans-serif; font-weight: 700;
+      font-size: 16px; margin-bottom: 4px; color: #2d1f14;
+    }
+    .review-card > p { margin: 0 0 14px; color: #7c6858; font-size: 13px; line-height: 1.45; }
+    .review-stars { display: flex; gap: 6px; margin-bottom: 14px; }
+    .review-star {
+      width: 36px; height: 36px; padding: 0; border-radius: 10px;
+      background: rgba(25, 98, 74, 0.06); border: 2px solid transparent;
+      font-size: 20px; cursor: pointer; transition: all 0.15s ease;
+      display: flex; align-items: center; justify-content: center; color: #bbb;
+    }
+    .review-star:hover { transform: scale(1.15); }
+    .review-star.active { background: rgba(25, 98, 74, 0.12); border-color: var(--tg-button-color); color: #e8a317; }
+    .review-comment {
+      width: 100%; padding: 12px 14px; border-radius: 14px;
+      border: 1px solid var(--line); background: rgba(255,255,255,.7);
+      font-family: inherit; font-size: 14px; color: var(--tg-text-color);
+      resize: vertical; min-height: 60px; max-height: 120px; margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    .review-comment::placeholder { color: #a89888; }
+    .review-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .review-submit {
+      padding: 10px 20px; border-radius: 12px;
+      background: linear-gradient(135deg, var(--tg-button-color), #0f4534);
+      color: var(--tg-button-text-color); font-weight: 700; font-size: 14px;
+      box-shadow: 0 6px 16px rgba(25, 98, 74, 0.2); border: none; cursor: pointer;
+    }
+    .review-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+    .review-dismiss { padding: 8px 12px; background: none; border: none; color: #7c6858; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .review-thanks { text-align: center; padding: 16px; color: #205441; font-weight: 600; font-size: 15px; }
+
     @media (max-width: 720px) {
+      .closed-card { padding: 24px 20px; border-radius: 22px; }
+      .closed-card h2 { font-size: 18px; }
+      .closed-card p { font-size: 13px; }
+      .review-card { padding: 14px; border-radius: 16px; }
+      .review-star { width: 32px; height: 32px; font-size: 18px; }
+
       .hero {
         padding: 16px;
         margin-bottom: 10px;
@@ -1026,8 +1113,14 @@
         <span class="badge">Полное меню</span>
         <span class="badge">Самовывоз</span>
         <span class="badge">Оплата через СБП</span>
+        <span class="badge hours-badge" id="hours-badge">
+          <span class="hours-dot" id="hours-dot"></span>
+          <span id="hours-text">09:00–22:00</span>
+        </span>
       </div>
     </section>
+
+    <div class="closing-warning" id="closing-warning"></div>
 
 
     <section class="order-summary" id="order-summary">
@@ -1036,6 +1129,8 @@
         <p id="summary-text"></p>
       </div>
     </section>
+
+    <div id="review-container"></div>
 
     <nav class="category-rail" id="category-rail"></nav>
 
@@ -1131,6 +1226,14 @@
     </div>
   </div>
 
+  <div class="closed-overlay" id="closed-overlay">
+    <div class="closed-card">
+      <h2>Кафе сейчас закрыто</h2>
+      <p>Заказы принимаются ежедневно<br>с 09:00 до 21:45 по иркутскому времени.</p>
+      <div class="hours-line">Часы работы: 09:00 – 22:00 (Иркутск, UTC+8)</div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -1155,6 +1258,8 @@
     const cart = new Map();
     const selectedVariants = new Map();
     let toastTimer = null;
+    let cafeSchedule = null;
+    let scheduleCheckInterval = null;
 
     function esc(str) {
       const el = document.createElement("span");
@@ -1173,6 +1278,126 @@
       toastTimer = window.setTimeout(() => {
         toast.className = "toast";
       }, 3200);
+    }
+
+    // ---- Working Hours ----
+    function updateScheduleUI() {
+      if (!cafeSchedule) return;
+      const hoursDot = document.getElementById("hours-dot");
+      const hoursText = document.getElementById("hours-text");
+      const closedOverlay = document.getElementById("closed-overlay");
+      const closingWarning = document.getElementById("closing-warning");
+
+      hoursText.textContent = cafeSchedule.opens_at + "–" + cafeSchedule.closes_at;
+
+      if (!cafeSchedule.is_open) {
+        hoursDot.classList.add("closed");
+        closedOverlay.classList.add("visible");
+        closingWarning.classList.remove("visible");
+        cartButton.style.display = "none";
+      } else {
+        hoursDot.classList.remove("closed");
+        closedOverlay.classList.remove("visible");
+        cartButton.style.display = "";
+        if (cafeSchedule.is_closing_soon) {
+          closingWarning.textContent =
+            "Кафе скоро закрывается. Последний заказ в " + cafeSchedule.last_order_at +
+            ". Осталось " + cafeSchedule.minutes_until_last_order + " мин.";
+          closingWarning.classList.add("visible");
+        } else {
+          closingWarning.classList.remove("visible");
+        }
+      }
+    }
+
+    async function checkSchedule() {
+      try {
+        const r = await fetch("/api/schedule");
+        if (!r.ok) return;
+        cafeSchedule = await r.json();
+        updateScheduleUI();
+      } catch (e) { /* ignore */ }
+    }
+
+    // ---- Review Card ----
+    function hasReviewedOrder(orderId) {
+      try { return JSON.parse(localStorage.getItem("cafe_reviewed_orders") || "[]").includes(orderId); }
+      catch (e) { return false; }
+    }
+    function markOrderReviewed(orderId) {
+      try {
+        const arr = JSON.parse(localStorage.getItem("cafe_reviewed_orders") || "[]");
+        arr.push(orderId);
+        localStorage.setItem("cafe_reviewed_orders", JSON.stringify(arr.slice(-50)));
+      } catch (e) { /* ignore */ }
+    }
+
+    function showReviewCard(order) {
+      if (hasReviewedOrder(order.order_id)) return;
+      const container = document.getElementById("review-container");
+      container.innerHTML = `
+        <div class="review-card" id="review-card">
+          <h3>Как вам заказ?</h3>
+          <p>Оцените заказ — это поможет нам стать лучше</p>
+          <div class="review-stars" id="review-stars">
+            ${[1,2,3,4,5].map(n => `<button type="button" class="review-star" data-rating="${n}">\u2605</button>`).join("")}
+          </div>
+          <textarea class="review-comment" id="review-comment" placeholder="Комментарий (необязательно)" maxlength="1000"></textarea>
+          <div class="review-actions">
+            <button type="button" class="review-dismiss" id="review-dismiss">Не сейчас</button>
+            <button type="button" class="review-submit" id="review-submit" disabled>Отправить</button>
+          </div>
+        </div>`;
+
+      let selectedRating = 0;
+
+      container.querySelector("#review-stars").addEventListener("click", (e) => {
+        const star = e.target.closest(".review-star");
+        if (!star) return;
+        selectedRating = Number(star.dataset.rating);
+        container.querySelectorAll(".review-star").forEach((s, i) => {
+          s.classList.toggle("active", i < selectedRating);
+        });
+        container.querySelector("#review-submit").disabled = false;
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      });
+
+      container.querySelector("#review-dismiss").addEventListener("click", () => {
+        markOrderReviewed(order.order_id);
+        const card = container.querySelector("#review-card");
+        card.style.opacity = "0";
+        setTimeout(() => { container.innerHTML = ""; }, 400);
+      });
+
+      container.querySelector("#review-submit").addEventListener("click", async () => {
+        if (!selectedRating) return;
+        const comment = container.querySelector("#review-comment").value.trim();
+        const btn = container.querySelector("#review-submit");
+        btn.disabled = true;
+        try {
+          const resp = await fetch("/api/reviews", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ order_id: order.order_id, user_id: getTelegramUserId(), rating: selectedRating, comment }),
+          });
+          if (!resp.ok) throw new Error("Ошибка");
+          markOrderReviewed(order.order_id);
+          container.querySelector("#review-card").innerHTML = '<div class="review-thanks">\u2705 Спасибо за ваш отзыв!</div>';
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          setTimeout(() => {
+            const card = container.querySelector("#review-card");
+            if (card) { card.style.opacity = "0"; setTimeout(() => { container.innerHTML = ""; }, 400); }
+          }, 3000);
+        } catch (err) {
+          showToast("Не удалось отправить отзыв", "error");
+          btn.disabled = false;
+        }
+      });
+
+      setTimeout(() => {
+        const card = container.querySelector("#review-card");
+        if (card) card.classList.add("visible");
+      }, 4000);
     }
 
     function findMenuItem(itemId) {
@@ -1442,7 +1667,10 @@
       const payload = await response.json();
       categories = payload.categories || [];
       globalNote = payload.global_note || "";
+      if (payload.schedule) cafeSchedule = payload.schedule;
       renderMenu();
+      updateScheduleUI();
+      if (!scheduleCheckInterval) scheduleCheckInterval = setInterval(checkSchedule, 60000);
     }
 
     // --- SBP Payment Flow ---
@@ -1551,6 +1779,7 @@
       if (currentPaymentOrder) {
         showOrderSummary(currentPaymentOrder);
         showToast(`Заказ №${currentPaymentOrder.public_order_number} оплачен.`);
+        showReviewCard(currentPaymentOrder);
       }
     }
 
@@ -1563,6 +1792,10 @@
     document.getElementById("sbp-done").addEventListener("click", finishPayment);
 
     async function checkout() {
+      if (cafeSchedule && !cafeSchedule.is_open) {
+        showToast("Кафе сейчас закрыто. Заказы не принимаются.", "error");
+        return;
+      }
       const userId = getTelegramUserId();
       if (!userId) {
         showToast("Откройте приложение из Telegram или добавьте ?user_id=ID.", "error");

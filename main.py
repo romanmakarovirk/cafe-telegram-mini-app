@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import Any, Optional
@@ -120,6 +120,17 @@ class OrderItem(Base):
     quantity: Mapped[int] = mapped_column(Integer)
     subtotal: Mapped[int] = mapped_column(Integer)
     order: Mapped[Order] = relationship(back_populates="items")
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(Integer, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    rating: Mapped[int] = mapped_column(Integer)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 CATEGORY_META = [
@@ -556,8 +567,46 @@ class CreateOrderRequest(BaseModel):
     items: list[CartItem]
 
 
+class SubmitReviewRequest(BaseModel):
+    order_id: int = Field(gt=0)
+    user_id: int = Field(gt=0)
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=1000)
+
+
+# ---------------------------------------------------------------------------
+#  Working hours (Irkutsk UTC+8)
+# ---------------------------------------------------------------------------
+IRKUTSK_TZ = timezone(timedelta(hours=8))
+OPEN_HOUR = 9
+CLOSE_HOUR = 22
+LAST_ORDER_MINUTES_BEFORE_CLOSE = 15
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def get_cafe_schedule() -> dict[str, Any]:
+    """Return current open/closed status in Irkutsk time."""
+    irkutsk_now = now_utc().astimezone(IRKUTSK_TZ)
+    current_minutes = irkutsk_now.hour * 60 + irkutsk_now.minute
+    open_minutes = OPEN_HOUR * 60
+    close_minutes = CLOSE_HOUR * 60
+    last_order_minutes = close_minutes - LAST_ORDER_MINUTES_BEFORE_CLOSE
+
+    is_open = open_minutes <= current_minutes < last_order_minutes
+    minutes_left = max(0, last_order_minutes - current_minutes) if is_open else 0
+
+    return {
+        "is_open": is_open,
+        "is_closing_soon": is_open and minutes_left <= 30,
+        "minutes_until_last_order": minutes_left,
+        "opens_at": f"{OPEN_HOUR:02d}:00",
+        "closes_at": f"{CLOSE_HOUR:02d}:00",
+        "last_order_at": f"{CLOSE_HOUR - 1}:{60 - LAST_ORDER_MINUTES_BEFORE_CLOSE:02d}",
+        "current_time_irkutsk": irkutsk_now.strftime("%H:%M"),
+    }
 
 
 def rub(amount: int) -> str:
@@ -1005,7 +1054,13 @@ async def get_menu() -> dict[str, Any]:
         "categories": categories,
         "items_count": sum(len(category["items"]) for category in categories),
         "global_note": "Чай чёрный/зелёный 200 мл — бесплатно к каждому заказу",
+        "schedule": get_cafe_schedule(),
     }
+
+
+@app.get("/api/schedule")
+async def get_schedule() -> dict[str, Any]:
+    return get_cafe_schedule()
 
 
 @app.get("/api/orders/{order_id}")
@@ -1019,6 +1074,13 @@ async def get_order(order_id: int) -> dict[str, Any]:
 async def create_order(payload: CreateOrderRequest) -> dict[str, Any]:
     if not payload.items:
         raise HTTPException(status_code=400, detail="Cart is empty.")
+
+    schedule = get_cafe_schedule()
+    if not schedule["is_open"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Кафе сейчас закрыто. Часы работы: {schedule['opens_at']}–{schedule['closes_at']} (Иркутск). Последний заказ в {schedule['last_order_at']}.",
+        )
 
     requested_quantities: dict[int, int] = {}
     for item in payload.items:
@@ -1142,3 +1204,44 @@ async def app_config() -> dict[str, Any]:
         "bot_configured": bool(BOT_TOKEN),
         "checkout_mode": "mock",
     }
+
+
+@app.post("/api/reviews")
+async def submit_review(payload: SubmitReviewRequest) -> dict[str, str]:
+    with db_session() as session:
+        order = session.get(Order, payload.order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        if order.telegram_user_id != payload.user_id:
+            raise HTTPException(status_code=403, detail="Not your order.")
+
+        existing = session.scalars(
+            select(Review).where(
+                Review.order_id == payload.order_id,
+                Review.telegram_user_id == payload.user_id,
+            )
+        ).first()
+        if existing:
+            return {"status": "already_submitted"}
+
+        review = Review(
+            order_id=payload.order_id,
+            telegram_user_id=payload.user_id,
+            rating=payload.rating,
+            comment=payload.comment.strip() if payload.comment else "",
+            created_at=now_utc(),
+        )
+        session.add(review)
+        session.commit()
+
+    if bot and ADMIN_CHAT_ID and payload.rating:
+        stars = "\u2B50" * payload.rating
+        text = f"Новый отзыв к заказу №{order.public_order_number}\n{stars}"
+        if payload.comment and payload.comment.strip():
+            text += f"\n\n{escape(payload.comment[:200])}"
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+        except Exception:
+            logging.exception("Failed to send review notification")
+
+    return {"status": "ok"}
