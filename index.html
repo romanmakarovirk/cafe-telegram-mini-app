@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Кафе | Тестовый онлайн-заказ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
       --tg-bg-color: var(--tg-theme-bg-color, #f7efe4);
@@ -86,6 +89,12 @@
       color: #fff8ef;
       box-shadow: var(--shadow);
       margin-bottom: 16px;
+      font-family: 'Montserrat', sans-serif;
+    }
+
+    .hero h1 {
+      font-family: 'Montserrat', sans-serif;
+      font-weight: 800;
     }
 
     .hero::after {
@@ -146,13 +155,6 @@
       font-weight: 700;
     }
 
-    .status-bar {
-      display: grid;
-      grid-template-columns: 1.3fr 0.8fr;
-      gap: 14px;
-      margin-bottom: 16px;
-    }
-
     .panel {
       background: var(--surface);
       border: 1px solid rgba(255, 255, 255, 0.32);
@@ -177,28 +179,6 @@
       font-family: "Trebuchet MS", "Segoe UI", sans-serif;
     }
 
-    .test-note {
-      display: grid;
-      gap: 8px;
-      color: #4d3a2f;
-    }
-
-    .test-note strong {
-      font-size: 20px;
-      font-family: Georgia, "Times New Roman", serif;
-    }
-
-    .user-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      padding: 14px 16px;
-      border-radius: 20px;
-      background: rgba(255, 255, 255, 0.6);
-      border: 1px solid var(--line);
-      font-size: 14px;
-    }
 
     .chip {
       display: inline-flex;
@@ -436,6 +416,13 @@
       border: 1px solid var(--line);
     }
 
+    .cart-item h4 {
+      font-family: 'Montserrat', 'Trebuchet MS', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: #2d1f14;
+    }
+
     .cart-item p {
       margin: 4px 0 0;
       color: #6a5648;
@@ -496,6 +483,74 @@
       font-weight: 800;
     }
 
+    .variant-pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .variant-pill {
+      padding: 8px 14px;
+      border-radius: 12px;
+      background: rgba(25, 98, 74, 0.08);
+      color: #205441;
+      font-weight: 700;
+      font-size: 13px;
+      border: 2px solid transparent;
+      transition: all 0.15s ease;
+    }
+
+    .variant-pill.selected {
+      background: rgba(25, 98, 74, 0.18);
+      border-color: var(--tg-button-color);
+    }
+
+    .category-note {
+      margin-top: 8px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: rgba(25, 98, 74, 0.08);
+      color: #205441;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .global-note {
+      margin-top: 8px;
+      padding: 16px 20px;
+      border-radius: 20px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      text-align: center;
+      color: #205441;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .card-qty-badge {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      min-width: 28px;
+      height: 28px;
+      padding: 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: var(--tg-button-color);
+      color: var(--tg-button-text-color);
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: 0 4px 12px rgba(25, 98, 74, 0.3);
+      z-index: 2;
+    }
+
+    .card {
+      position: relative;
+    }
+
     .empty-state {
       padding: 28px 18px;
       text-align: center;
@@ -546,17 +601,283 @@
       background: rgba(130, 39, 30, 0.96);
     }
 
-    @media (max-width: 860px) {
-      .status-bar {
-        grid-template-columns: 1fr;
-      }
+    /* SBP Payment Modal */
+    .sbp-sheet {
+      max-width: 420px;
+      max-height: min(92vh, 900px);
+      padding: 0;
+      border-radius: 24px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: #fff;
+    }
+
+    .sbp-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 480px;
+    }
+
+    .sbp-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      padding: 16px 20px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .sbp-logo {
+      height: 32px;
+    }
+
+    .sbp-close-btn {
+      padding: 8px 14px;
+      border-radius: 12px;
+      background: #f5f5f5;
+      color: #666;
+      font-weight: 600;
+      font-size: 14px;
+      border: none;
+      cursor: pointer;
+    }
+
+    .sbp-amount-display {
+      text-align: center;
+      padding: 24px 20px 8px;
+      width: 100%;
+    }
+
+    .sbp-amount-label {
+      margin: 0;
+      font-size: 14px;
+      color: #999;
+    }
+
+    .sbp-amount-value {
+      margin: 6px 0 0;
+      font-size: 38px;
+      font-weight: 800;
+      color: #1a1a1a;
+      font-family: 'Montserrat', sans-serif;
+    }
+
+    .sbp-order-info {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: #aaa;
+    }
+
+    .sbp-qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .sbp-qr-code svg {
+      border-radius: 12px;
+    }
+
+    .sbp-qr-hint {
+      margin: 14px 0 0;
+      color: #888;
+      font-size: 14px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .sbp-timer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 16px;
+      border-radius: 999px;
+      background: #f8f7ff;
+      color: #7B61FF;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .sbp-bank-button {
+      display: block;
+      width: calc(100% - 40px);
+      margin: 20px auto 0;
+      padding: 16px;
+      border-radius: 16px;
+      border: none;
+      background: linear-gradient(135deg, #7B61FF, #5B3FE0);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(123, 97, 255, 0.3);
+      transition: transform 0.15s ease;
+    }
+
+    .sbp-bank-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .sbp-banks-row {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      padding: 20px 20px 24px;
+      flex-wrap: wrap;
+    }
+
+    .sbp-bank-pill {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      opacity: 0.85;
+    }
+
+    .sbp-processing-animation {
+      width: 72px;
+      height: 72px;
+      margin: 80px auto 28px;
+      border: 4px solid #ede9ff;
+      border-top: 4px solid #7B61FF;
+      border-radius: 50%;
+      animation: sbp-spin 0.8s linear infinite;
+    }
+
+    @keyframes sbp-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .sbp-processing-text {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      color: #1a1a1a;
+    }
+
+    .sbp-processing-hint {
+      margin: 8px 0 0;
+      font-size: 14px;
+      color: #999;
+    }
+
+    .sbp-success-icon {
+      width: 80px;
+      height: 80px;
+      margin: 60px auto 24px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #2ecc71, #27ae60);
+      position: relative;
+      animation: sbp-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+      box-shadow: 0 12px 32px rgba(46, 204, 113, 0.3);
+    }
+
+    .sbp-success-icon::after {
+      content: '';
+      position: absolute;
+      left: 28px;
+      top: 18px;
+      width: 20px;
+      height: 36px;
+      border: solid #fff;
+      border-width: 0 4px 4px 0;
+      transform: rotate(45deg);
+    }
+
+    @keyframes sbp-pop {
+      0% { transform: scale(0); opacity: 0; }
+      60% { transform: scale(1.15); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .sbp-success-title {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      color: #1a1a1a;
+      font-family: 'Montserrat', sans-serif;
+    }
+
+    .sbp-success-amount {
+      margin: 8px 0 0;
+      font-size: 28px;
+      font-weight: 800;
+      color: #27ae60;
+      font-family: 'Montserrat', sans-serif;
+    }
+
+    .sbp-success-order {
+      margin: 4px 0 0;
+      font-size: 14px;
+      color: #999;
+    }
+
+    .sbp-success-hint {
+      margin: 20px 0 0;
+      font-size: 14px;
+      color: #888;
+      text-align: center;
+      line-height: 1.5;
+      padding: 0 20px;
+    }
+
+    .sbp-done-button {
+      display: block;
+      width: calc(100% - 40px);
+      margin: 24px auto 24px;
+      padding: 16px;
+      border-radius: 16px;
+      border: none;
+      background: linear-gradient(135deg, #27ae60, #2ecc71);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(39, 174, 96, 0.3);
     }
 
     @media (max-width: 720px) {
-      .hero,
-      .panel,
+      .hero {
+        padding: 16px;
+        margin-bottom: 10px;
+        border-radius: 20px;
+      }
+
+      .hero h1 {
+        font-size: 22px;
+        line-height: 1.1;
+      }
+
+      .eyebrow {
+        font-size: 10px;
+        margin-bottom: 4px;
+      }
+
+      .hero-copy {
+        display: none;
+      }
+
+      .hero-meta {
+        margin-top: 10px;
+        gap: 6px;
+      }
+
+      .badge {
+        padding: 6px 10px;
+        font-size: 11px;
+      }
+
+      .panel {
+        padding: 14px;
+      }
+
       .modal-sheet {
-        padding: 20px;
+        padding: 18px;
+        border-radius: 24px;
       }
 
       .section-head,
@@ -565,8 +886,52 @@
         align-items: start;
       }
 
+      .section-head h2 {
+        font-size: 20px;
+      }
+
+      .section-head p {
+        font-size: 13px;
+        margin-top: 4px;
+      }
+
       .cart-item {
         grid-template-columns: 1fr;
+        padding: 12px;
+        border-radius: 14px;
+        gap: 10px;
+      }
+
+      .cart-item h4 {
+        font-size: 15px;
+        margin-bottom: 2px;
+      }
+
+      .cart-item p {
+        font-size: 13px;
+      }
+
+      .qty-panel {
+        align-self: start;
+      }
+
+      .checkout-card {
+        padding: 14px;
+        border-radius: 18px;
+      }
+
+      .checkout-row {
+        font-size: 15px;
+      }
+
+      .checkout-note {
+        font-size: 12px;
+      }
+
+      .primary-button {
+        padding: 14px;
+        font-size: 15px;
+        border-radius: 14px;
       }
 
       .cart-fab {
@@ -574,41 +939,96 @@
         right: 12px;
         justify-content: space-between;
       }
+
+      .menu-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+
+      .card {
+        grid-template-rows: 48px 1fr;
+        border-radius: 14px;
+      }
+
+      .card img {
+        border-radius: 14px 14px 0 0;
+      }
+
+      .card-body {
+        padding: 8px 10px 10px;
+        gap: 6px;
+      }
+
+      .card-body h3 {
+        font-size: 14px;
+        line-height: 1.25;
+      }
+
+      .card-body p {
+        display: none;
+      }
+
+      .card-footer {
+        gap: 6px;
+      }
+
+      .price {
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .add-button {
+        min-width: unset;
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-size: 12px;
+      }
+
+      .card-qty-badge {
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+        top: 6px;
+        right: 6px;
+      }
+
+      .variant-pills {
+        gap: 4px;
+      }
+
+      .variant-pill {
+        padding: 4px 8px;
+        font-size: 11px;
+      }
+
+      .category-note {
+        font-size: 12px;
+        padding: 8px 12px;
+      }
+
+      .ghost-button {
+        padding: 10px 12px;
+        font-size: 13px;
+      }
     }
   </style>
 </head>
 <body>
   <div class="app">
     <section class="hero">
-      <p class="eyebrow">Telegram Mini App • Предфинальная сборка</p>
-      <h1>Онлайн-заказ для кафе с тестовой оплатой и уведомлениями в Telegram</h1>
+      <p class="eyebrow">Шашлык и Плов · Онлайн-заказ</p>
+      <h1>Онлайн-заказ для кафе с оплатой через СБП</h1>
       <p class="hero-copy">
-        Выберите блюда из полного меню, оформите тестовый заказ и дождитесь статуса
-        от кассира прямо в Telegram. Реальная СБП-оплата будет подключена следующим этапом.
+        Выберите блюда из полного меню, оформите заказ через СБП и отслеживайте
+        статус прямо в Telegram.
       </p>
       <div class="hero-meta">
         <span class="badge">Полное меню</span>
         <span class="badge">Самовывоз</span>
-        <span class="badge">СБП тестовый сценарий</span>
+        <span class="badge">Оплата через СБП</span>
       </div>
     </section>
 
-    <section class="status-bar">
-      <div class="panel test-note">
-        <span class="panel-title">Режим проверки</span>
-        <strong>Оплата сейчас тестовая</strong>
-        <p>
-          После оформления заказ автоматически переходит в статус оплаченного тестового заказа.
-          Кассир получает его в Telegram и может отметить этапы приготовления.
-        </p>
-      </div>
-      <div class="panel">
-        <span class="panel-title">Пользователь Telegram</span>
-        <div class="user-pill" id="user-pill">
-          <span class="chip" id="checkout-chip">Загружаем профиль...</span>
-        </div>
-      </div>
-    </section>
 
     <section class="order-summary" id="order-summary">
       <div class="summary-card">
@@ -620,8 +1040,10 @@
     <nav class="category-rail" id="category-rail"></nav>
 
     <main id="menu-root">
-      <div class="loader">Загружаем меню кафе...</div>
+      <div class="loader" id="loader-msg">Загружаем меню кафе...</div>
     </main>
+
+    <div class="global-note" id="global-note" style="display:none"></div>
   </div>
 
   <button class="cart-fab" id="cart-button" type="button">
@@ -634,7 +1056,7 @@
       <div class="modal-head">
         <div>
           <h2>Ваш заказ</h2>
-          <p>Проверьте позиции перед тестовым оформлением.</p>
+          <p>Проверьте позиции перед оформлением.</p>
         </div>
         <button class="ghost-button" id="close-modal" type="button">Закрыть</button>
       </div>
@@ -647,9 +1069,64 @@
           <strong id="cart-total">0 ₽</strong>
         </div>
         <p class="checkout-note">
-          Нажатие кнопки оформит тестовый заказ. Деньги не списываются, заказ сразу уйдёт кассиру в Telegram как оплаченный тестовый.
+          Оплата проходит через Систему Быстрых Платежей. После оплаты заказ поступит на кассу.
         </p>
-        <button class="primary-button" id="pay-button" type="button">Оплатить через СБП (тест)</button>
+        <button class="primary-button" id="pay-button" type="button">Оплатить через СБП</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="sbp-modal">
+    <div class="modal-sheet sbp-sheet">
+      <!-- QR Screen -->
+      <div class="sbp-screen" id="sbp-qr-screen">
+        <div class="sbp-header">
+          <svg class="sbp-logo" viewBox="0 0 120 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="4" width="24" height="24" rx="6" fill="#7B61FF"/>
+            <path d="M8 16l4 4 6-8" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <text x="32" y="22" font-family="Montserrat,sans-serif" font-weight="800" font-size="16" fill="#1a1a1a">СБП</text>
+          </svg>
+          <button class="sbp-close-btn" id="sbp-close" type="button">Отмена</button>
+        </div>
+        <div class="sbp-amount-display">
+          <p class="sbp-amount-label">К оплате</p>
+          <p class="sbp-amount-value" id="sbp-amount">0 &#8381;</p>
+          <p class="sbp-order-info" id="sbp-order-info">Заказ №0000</p>
+        </div>
+        <div class="sbp-qr-container">
+          <div class="sbp-qr-code" id="sbp-qr-code"></div>
+          <p class="sbp-qr-hint">Отсканируйте QR-код<br>в приложении вашего банка</p>
+        </div>
+        <div class="sbp-timer" id="sbp-timer">&#9201; <span id="sbp-timer-text">15:00</span></div>
+        <button class="sbp-bank-button" id="sbp-open-bank" type="button">Открыть приложение банка</button>
+        <div class="sbp-banks-row">
+          <span class="sbp-bank-pill" style="background:#21a038">Сбер</span>
+          <span class="sbp-bank-pill" style="background:#ffdd2d;color:#333">Т-Банк</span>
+          <span class="sbp-bank-pill" style="background:#ef3124">Альфа</span>
+          <span class="sbp-bank-pill" style="background:#002882">ВТБ</span>
+          <span class="sbp-bank-pill" style="background:#1a6ae0">Газпром</span>
+        </div>
+      </div>
+
+      <!-- Processing Screen -->
+      <div class="sbp-screen" id="sbp-processing-screen" style="display:none">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div class="sbp-processing-animation"></div>
+          <p class="sbp-processing-text">Ожидаем подтверждение оплаты</p>
+          <p class="sbp-processing-hint">Обычно это занимает несколько секунд</p>
+        </div>
+      </div>
+
+      <!-- Success Screen -->
+      <div class="sbp-screen" id="sbp-success-screen" style="display:none">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div class="sbp-success-icon"></div>
+          <h2 class="sbp-success-title">Оплата прошла успешно</h2>
+          <p class="sbp-success-amount" id="sbp-success-amount">0 &#8381;</p>
+          <p class="sbp-success-order" id="sbp-success-order">Заказ №0000</p>
+          <p class="sbp-success-hint">Уведомление о статусе заказа<br>придёт в Telegram</p>
+        </div>
+        <button class="sbp-done-button" id="sbp-done" type="button">Отлично</button>
       </div>
     </div>
   </div>
@@ -669,17 +1146,24 @@
     const cartTotalElement = document.getElementById("cart-total");
     const payButton = document.getElementById("pay-button");
     const toast = document.getElementById("toast");
-    const userPill = document.getElementById("user-pill");
-    const checkoutChip = document.getElementById("checkout-chip");
     const orderSummary = document.getElementById("order-summary");
     const summaryText = document.getElementById("summary-text");
+    const globalNoteEl = document.getElementById("global-note");
 
     let categories = [];
+    let globalNote = "";
     const cart = new Map();
+    const selectedVariants = new Map();
     let toastTimer = null;
 
+    function esc(str) {
+      const el = document.createElement("span");
+      el.textContent = str;
+      return el.innerHTML;
+    }
+
     function formatPrice(value) {
-      return `${new Intl.NumberFormat("ru-RU").format(value)} ₽`;
+      return `${new Intl.NumberFormat("ru-RU").format(value)} \u20BD`;
     }
 
     function showToast(message, type = "default") {
@@ -691,77 +1175,78 @@
       }, 3200);
     }
 
-    function flattenItems() {
-      return categories.flatMap((category) => category.items || []);
-    }
-
     function findMenuItem(itemId) {
-      return flattenItems().find((item) => item.id === Number(itemId));
-    }
-
-    function getTelegramUserId() {
-      const fromTelegram = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
-        ? Number(tg.initDataUnsafe.user.id)
-        : 0;
-
-      if (fromTelegram) {
-        return fromTelegram;
-      }
-
-      const params = new URLSearchParams(window.location.search);
-      return Number(params.get("user_id") || 0);
-    }
-
-    function getDisplayName() {
-      if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
-        const user = tg.initDataUnsafe.user;
-        return [user.first_name, user.last_name].filter(Boolean).join(" ") || `ID ${user.id}`;
+      const id = Number(itemId);
+      for (const cat of categories) {
+        for (const item of (cat.items || [])) {
+          if (item.id === id) return item;
+          if (item.variants) {
+            const v = item.variants.find(v => v.id === id);
+            if (v) return { ...item, id: v.id, price: v.price, name: item.name + " " + v.label, variants: null };
+          }
+        }
       }
       return null;
     }
 
-    function updateUserBadge() {
-      const userId = getTelegramUserId();
-      const name = getDisplayName();
-      if (userId) {
-        userPill.innerHTML = `
-          <span class="chip">Telegram ID: ${userId}</span>
-          ${name ? `<span>${name}</span>` : ""}
-        `;
-        checkoutChip.textContent = "Оформление доступно";
-        return;
+    function getTelegramUserId() {
+      if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+        return Number(tg.initDataUnsafe.user.id);
       }
-
-      userPill.innerHTML = `
-        <span class="chip">Локальный режим</span>
-        <span>Для теста без Telegram используйте параметр ?user_id=123456</span>
-      `;
-      checkoutChip.textContent = "Требуется Telegram или ?user_id";
+      const params = new URLSearchParams(window.location.search);
+      return Number(params.get("user_id") || 0);
     }
 
     function totalItemsCount() {
       let total = 0;
-      cart.forEach((quantity) => {
-        total += quantity;
-      });
+      cart.forEach((qty) => { total += qty; });
       return total;
     }
 
     function totalPrice() {
-      return Array.from(cart.entries()).reduce((sum, [itemId, quantity]) => {
+      let sum = 0;
+      cart.forEach((qty, itemId) => {
         const item = findMenuItem(itemId);
-        return item ? sum + item.price * quantity : sum;
-      }, 0);
+        if (item) sum += item.price * qty;
+      });
+      return sum;
     }
 
     function updateCartBadge() {
       cartCount.textContent = String(totalItemsCount());
     }
 
+    function saveCart() {
+      try {
+        localStorage.setItem("cafe_cart", JSON.stringify(Array.from(cart.entries())));
+      } catch (e) { /* ignore */ }
+    }
+
+    function loadCart() {
+      try {
+        const saved = localStorage.getItem("cafe_cart");
+        if (saved) {
+          JSON.parse(saved).forEach(([id, qty]) => cart.set(id, qty));
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    function getItemCartQty(itemId) {
+      return cart.get(itemId) || 0;
+    }
+
+    function getVariantGroupCartQty(variants) {
+      let total = 0;
+      variants.forEach(v => { total += (cart.get(v.id) || 0); });
+      return total;
+    }
+
     function addToCart(itemId) {
       const current = cart.get(itemId) || 0;
       cart.set(itemId, current + 1);
       updateCartBadge();
+      saveCart();
+      updateCardBadges();
       if (tg && tg.HapticFeedback) {
         tg.HapticFeedback.impactOccurred("light");
       }
@@ -777,7 +1262,33 @@
         cart.set(itemId, next);
       }
       updateCartBadge();
+      saveCart();
+      updateCardBadges();
       renderCart();
+    }
+
+    function updateCardBadges() {
+      document.querySelectorAll("[data-card-item-id]").forEach(card => {
+        const itemId = Number(card.dataset.cardItemId);
+        let badge = card.querySelector(".card-qty-badge");
+        let qty = getItemCartQty(itemId);
+        if (card.dataset.variantGroup) {
+          const item = findMenuItem(itemId);
+          if (item && item.variants) {
+            qty = getVariantGroupCartQty(item.variants);
+          }
+        }
+        if (qty > 0) {
+          if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "card-qty-badge";
+            card.appendChild(badge);
+          }
+          badge.textContent = String(qty);
+        } else if (badge) {
+          badge.remove();
+        }
+      });
     }
 
     function renderCategoryRail() {
@@ -791,6 +1302,41 @@
       });
     }
 
+    function renderItemCard(item) {
+      const hasVariants = item.variants && item.variants.length > 1;
+      const selectedId = hasVariants
+        ? (selectedVariants.get(item.id) || item.variants[0].id)
+        : item.id;
+      const selectedVariant = hasVariants
+        ? item.variants.find(v => v.id === selectedId) || item.variants[0]
+        : null;
+      const displayPrice = selectedVariant ? selectedVariant.price : item.price;
+      const addItemId = selectedVariant ? selectedVariant.id : item.id;
+
+      let variantHtml = "";
+      if (hasVariants) {
+        variantHtml = `<div class="variant-pills" data-variant-parent="${item.id}">` +
+          item.variants.map(v =>
+            `<button type="button" class="variant-pill${v.id === selectedId ? ' selected' : ''}" data-variant-id="${v.id}" data-variant-parent="${item.id}">${esc(v.label)} — ${formatPrice(v.price)}</button>`
+          ).join("") + `</div>`;
+      }
+
+      return `<article class="card" data-card-item-id="${item.id}" ${hasVariants ? 'data-variant-group="true"' : ''}>
+        <img src="${esc(item.image_url)}" alt="${esc(item.name)}" loading="lazy" />
+        <div class="card-body">
+          <div>
+            <h3>${esc(item.name)}</h3>
+            <p>${esc(item.description)}</p>
+            ${variantHtml}
+          </div>
+          <div class="card-footer">
+            <span class="price" data-price-for="${item.id}">${formatPrice(displayPrice)}</span>
+            <button class="add-button" type="button" data-item-id="${addItemId}" data-add-for="${item.id}">Добавить</button>
+          </div>
+        </div>
+      </article>`;
+    }
+
     function renderMenu() {
       if (!categories.length) {
         menuRoot.innerHTML = '<div class="error-box">Меню пока пустое.</div>';
@@ -799,35 +1345,32 @@
       }
 
       renderCategoryRail();
-      menuRoot.innerHTML = categories.map((category) => `
-        <section class="panel section" id="category-${category.slug}">
+      menuRoot.innerHTML = categories.map((category) => {
+        const noteHtml = category.note
+          ? `<div class="category-note">${esc(category.note)}</div>`
+          : "";
+        return `<section class="panel section" id="category-${esc(category.slug)}">
           <div class="section-head">
             <div>
-              <span class="panel-title">${category.title}</span>
-              <h2>${category.title}</h2>
-              <p>${category.subtitle || ""}</p>
+              <span class="panel-title">${esc(category.title)}</span>
+              <h2>${esc(category.title)}</h2>
+              <p>${esc(category.subtitle || "")}</p>
+              ${noteHtml}
             </div>
             <div class="chip">${category.items.length} поз.</div>
           </div>
           <div class="menu-grid">
-            ${category.items.map((item) => `
-              <article class="card">
-                <img src="${item.image_url}" alt="${item.name}" loading="lazy" />
-                <div class="card-body">
-                  <div>
-                    <h3>${item.name}</h3>
-                    <p>${item.description}</p>
-                  </div>
-                  <div class="card-footer">
-                    <span class="price">${formatPrice(item.price)}</span>
-                    <button class="add-button" type="button" data-item-id="${item.id}">Добавить</button>
-                  </div>
-                </div>
-              </article>
-            `).join("")}
+            ${category.items.map(renderItemCard).join("")}
           </div>
-        </section>
-      `).join("");
+        </section>`;
+      }).join("");
+
+      if (globalNote) {
+        globalNoteEl.textContent = globalNote;
+        globalNoteEl.style.display = "block";
+      }
+
+      updateCardBadges();
     }
 
     function renderCart() {
@@ -835,34 +1378,38 @@
       cartItemsContainer.innerHTML = "";
 
       if (!entries.length) {
-        cartItemsContainer.innerHTML = `
-          <div class="empty-state">
-            Корзина пока пустая. Добавьте блюда из меню, чтобы оформить тестовый заказ.
-          </div>
-        `;
+        cartItemsContainer.innerHTML = `<div class="empty-state">Корзина пока пустая. Добавьте блюда из меню, чтобы оформить заказ.</div>`;
         cartTotalElement.textContent = formatPrice(0);
         return;
       }
 
       entries.forEach(([itemId, quantity]) => {
         const item = findMenuItem(itemId);
-        if (!item) {
-          return;
-        }
+        if (!item) return;
         const row = document.createElement("div");
         row.className = "cart-item";
-        row.innerHTML = `
-          <div>
-            <h4>${item.name}</h4>
-            <p>${item.description}</p>
-            <p>Сумма: ${formatPrice(item.price * quantity)}</p>
-          </div>
-          <div class="qty-panel">
-            <button class="qty-button" type="button" data-action="decrease" data-item-id="${item.id}">−</button>
-            <span class="qty-value">${quantity}</span>
-            <button class="qty-button" type="button" data-action="increase" data-item-id="${item.id}">+</button>
-          </div>
+
+        const info = document.createElement("div");
+        const h4 = document.createElement("h4");
+        h4.textContent = item.name;
+        info.appendChild(h4);
+        const desc = document.createElement("p");
+        desc.textContent = item.description;
+        info.appendChild(desc);
+        const subtotal = document.createElement("p");
+        subtotal.textContent = `Сумма: ${formatPrice(item.price * quantity)}`;
+        info.appendChild(subtotal);
+
+        const qtyPanel = document.createElement("div");
+        qtyPanel.className = "qty-panel";
+        qtyPanel.innerHTML = `
+          <button class="qty-button" type="button" data-action="decrease" data-item-id="${item.id}">\u2212</button>
+          <span class="qty-value">${quantity}</span>
+          <button class="qty-button" type="button" data-action="increase" data-item-id="${item.id}">+</button>
         `;
+
+        row.appendChild(info);
+        row.appendChild(qtyPanel);
         cartItemsContainer.appendChild(row);
       });
 
@@ -880,102 +1427,202 @@
 
     function showOrderSummary(order) {
       orderSummary.classList.add("visible");
-      summaryText.textContent = `Заказ №${order.public_order_number} оформлен как тестовый. Дальнейшие статусы придут в Telegram.`;
+      const statusLabels = { paid: "Оплачен", preparing: "Готовится", ready: "Готов к выдаче" };
+      document.getElementById("summary-title").textContent = `Заказ №${order.public_order_number}`;
+      summaryText.innerHTML =
+        `Статус: <strong>${statusLabels[order.status] || order.status}</strong><br>` +
+        `Сумма: ${formatPrice(order.total)}<br>` +
+        `Уведомления о готовности придут в Telegram.`;
       orderSummary.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     async function fetchMenu() {
       const response = await fetch("/api/menu");
-      if (!response.ok) {
-        throw new Error("Не удалось загрузить меню.");
-      }
+      if (!response.ok) throw new Error("Не удалось загрузить меню.");
       const payload = await response.json();
       categories = payload.categories || [];
+      globalNote = payload.global_note || "";
       renderMenu();
     }
+
+    // --- SBP Payment Flow ---
+    const sbpModal = document.getElementById("sbp-modal");
+    const sbpQrScreen = document.getElementById("sbp-qr-screen");
+    const sbpProcessingScreen = document.getElementById("sbp-processing-screen");
+    const sbpSuccessScreen = document.getElementById("sbp-success-screen");
+    let currentPaymentOrder = null;
+    let sbpTimerInterval = null;
+    let sbpTimeLeft = 900;
+
+    function generateMockQR(orderId) {
+      const size = 180;
+      const m = 29;
+      const c = size / m;
+      let seed = (orderId || 1) * 2654435761 >>> 0;
+      function rand() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+      let rects = "";
+      function finderPattern(ox, oy) {
+        for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
+          const on = (y === 0 || y === 6 || x === 0 || x === 6) ||
+                     (y >= 2 && y <= 4 && x >= 2 && x <= 4);
+          if (on) rects += `<rect x="${(ox+x)*c}" y="${(oy+y)*c}" width="${c}" height="${c}"/>`;
+        }
+      }
+      finderPattern(0, 0);
+      finderPattern(m - 7, 0);
+      finderPattern(0, m - 7);
+
+      for (let y = 0; y < m; y++) for (let x = 0; x < m; x++) {
+        if ((x < 8 && y < 8) || (x >= m-8 && y < 8) || (x < 8 && y >= m-8)) continue;
+        if (rand() > 0.52) rects += `<rect x="${x*c}" y="${y*c}" width="${c}" height="${c}"/>`;
+      }
+
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#fff" rx="8"/>${rects}</svg>`;
+    }
+
+    function startSbpTimer() {
+      sbpTimeLeft = 900;
+      updateTimerDisplay();
+      sbpTimerInterval = setInterval(() => {
+        sbpTimeLeft--;
+        updateTimerDisplay();
+        if (sbpTimeLeft <= 0) clearInterval(sbpTimerInterval);
+      }, 1000);
+    }
+
+    function updateTimerDisplay() {
+      const min = Math.floor(sbpTimeLeft / 60);
+      const sec = sbpTimeLeft % 60;
+      document.getElementById("sbp-timer-text").textContent = `${min}:${String(sec).padStart(2, "0")}`;
+    }
+
+    function openSbpPayment(order) {
+      currentPaymentOrder = order;
+      document.getElementById("sbp-amount").textContent = formatPrice(order.total);
+      document.getElementById("sbp-order-info").textContent = `Заказ №${order.public_order_number}`;
+      document.getElementById("sbp-success-amount").textContent = formatPrice(order.total);
+      document.getElementById("sbp-success-order").textContent = `Заказ №${order.public_order_number}`;
+      document.getElementById("sbp-qr-code").innerHTML = generateMockQR(order.order_id);
+      sbpQrScreen.style.display = "flex";
+      sbpProcessingScreen.style.display = "none";
+      sbpSuccessScreen.style.display = "none";
+      sbpModal.classList.add("open");
+      startSbpTimer();
+    }
+
+    function closeSbpModal() {
+      sbpModal.classList.remove("open");
+      clearInterval(sbpTimerInterval);
+    }
+
+    async function simulatePayment() {
+      sbpQrScreen.style.display = "none";
+      sbpProcessingScreen.style.display = "flex";
+      clearInterval(sbpTimerInterval);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+
+      await new Promise(r => setTimeout(r, 2500));
+
+      try {
+        const resp = await fetch(`/api/orders/${currentPaymentOrder.order_id}/confirm-payment`, { method: "POST" });
+        if (!resp.ok) throw new Error("Ошибка подтверждения оплаты.");
+        const confirmed = await resp.json();
+        currentPaymentOrder = confirmed;
+
+        sbpProcessingScreen.style.display = "none";
+        sbpSuccessScreen.style.display = "flex";
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+
+        cart.clear();
+        saveCart();
+        updateCartBadge();
+        updateCardBadges();
+        payButton.disabled = false;
+      } catch (error) {
+        closeSbpModal();
+        showToast(error.message || "Ошибка оплаты.", "error");
+        payButton.disabled = false;
+      }
+    }
+
+    function finishPayment() {
+      closeSbpModal();
+      if (currentPaymentOrder) {
+        showOrderSummary(currentPaymentOrder);
+        showToast(`Заказ №${currentPaymentOrder.public_order_number} оплачен.`);
+      }
+    }
+
+    document.getElementById("sbp-open-bank").addEventListener("click", simulatePayment);
+    document.getElementById("sbp-close").addEventListener("click", () => {
+      closeSbpModal();
+      showToast("Оплата отменена.", "error");
+      payButton.disabled = false;
+    });
+    document.getElementById("sbp-done").addEventListener("click", finishPayment);
 
     async function checkout() {
       const userId = getTelegramUserId();
       if (!userId) {
-        showToast("Откройте приложение из Telegram или добавьте ?user_id=123456.", "error");
+        showToast("Откройте приложение из Telegram или добавьте ?user_id=ID.", "error");
         return;
       }
-
       const items = Array.from(cart.entries()).map(([itemId, quantity]) => ({
-        item_id: Number(itemId),
-        quantity
+        item_id: Number(itemId), quantity
       }));
-
       if (!items.length) {
         showToast("Корзина пустая.", "error");
         return;
       }
-
       payButton.disabled = true;
-
       try {
-        showToast("Создаём тестовый заказ...");
-
         const createResponse = await fetch("/api/create_order", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            user_id: userId,
-            items
-          })
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, items })
         });
-
-        if (!createResponse.ok) {
-          throw new Error("Не удалось создать заказ.");
-        }
-
+        if (!createResponse.ok) throw new Error("Не удалось создать заказ.");
         const order = await createResponse.json();
-        showToast("Подтверждаем тестовую оплату...");
-
-        await new Promise((resolve) => window.setTimeout(resolve, 900));
-
-        const confirmResponse = await fetch(`/api/orders/${order.order_id}/confirm-payment`, {
-          method: "POST"
-        });
-
-        if (!confirmResponse.ok) {
-          throw new Error("Не удалось подтвердить тестовую оплату.");
-        }
-
-        const confirmedOrder = await confirmResponse.json();
-        cart.clear();
-        updateCartBadge();
-        renderCart();
         closeCart();
-        showOrderSummary(confirmedOrder);
-
-        if (tg && tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred("success");
-        }
-
-        showToast(`Тестовый заказ №${confirmedOrder.public_order_number} оформлен.`);
+        openSbpPayment(order);
       } catch (error) {
         showToast(error.message || "Ошибка оформления заказа.", "error");
-      } finally {
         payButton.disabled = false;
       }
     }
 
     menuRoot.addEventListener("click", (event) => {
-      const button = event.target.closest("[data-item-id]");
-      if (!button) {
+      const variantPill = event.target.closest(".variant-pill");
+      if (variantPill) {
+        const parentId = Number(variantPill.dataset.variantParent);
+        const variantId = Number(variantPill.dataset.variantId);
+        selectedVariants.set(parentId, variantId);
+        const container = variantPill.closest(".variant-pills");
+        container.querySelectorAll(".variant-pill").forEach(p => p.classList.remove("selected"));
+        variantPill.classList.add("selected");
+        const item = findMenuItem(parentId);
+        if (item && item.variants) {
+          const v = item.variants.find(v => v.id === variantId);
+          if (v) {
+            const priceEl = document.querySelector(`[data-price-for="${parentId}"]`);
+            if (priceEl) priceEl.textContent = formatPrice(v.price);
+            const addBtn = document.querySelector(`[data-add-for="${parentId}"]`);
+            if (addBtn) addBtn.dataset.itemId = String(variantId);
+          }
+        }
         return;
       }
-      addToCart(Number(button.dataset.itemId));
+      const addBtn = event.target.closest(".add-button[data-item-id]");
+      if (addBtn) {
+        addToCart(Number(addBtn.dataset.itemId));
+        return;
+      }
     });
 
     cartItemsContainer.addEventListener("click", (event) => {
       const button = event.target.closest("[data-action][data-item-id]");
-      if (!button) {
-        return;
-      }
+      if (!button) return;
       const delta = button.dataset.action === "increase" ? 1 : -1;
       changeQuantity(Number(button.dataset.itemId), delta);
     });
@@ -983,9 +1630,7 @@
     cartButton.addEventListener("click", openCart);
     closeModalButton.addEventListener("click", closeCart);
     cartModal.addEventListener("click", (event) => {
-      if (event.target === cartModal) {
-        closeCart();
-      }
+      if (event.target === cartModal) closeCart();
     });
     payButton.addEventListener("click", checkout);
 
@@ -995,10 +1640,16 @@
       document.documentElement.style.colorScheme = tg.colorScheme || "light";
     }
 
-    updateUserBadge();
-    fetchMenu().catch((error) => {
-      menuRoot.innerHTML = `<div class="error-box">${error.message || "Не удалось загрузить меню."}</div>`;
-      showToast(error.message || "Не удалось загрузить интерфейс.", "error");
+    loadCart();
+    updateCartBadge();
+
+    const loaderMsg = document.getElementById("loader-msg");
+    loaderMsg.textContent = "Загружаем меню...";
+
+    fetchMenu().then(() => {
+      loaderMsg.remove();
+    }).catch((error) => {
+      menuRoot.innerHTML = `<div class="error-box">Ошибка: ${esc(error.message || "Не удалось загрузить меню.")} | URL: ${window.location.href}</div>`;
     });
   </script>
 </body>

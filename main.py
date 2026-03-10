@@ -127,6 +127,7 @@ CATEGORY_META = [
         "slug": "grill",
         "title": "Шашлык",
         "subtitle": "Мясо на углях, люля и быстрые горячие закуски.",
+        "note": "К блюдам подаётся лаваш и овощной салат — бесплатно",
         "colors": ("#4C2A1B", "#A65D35"),
     },
     {
@@ -323,6 +324,30 @@ MENU_SEED: list[dict[str, Any]] = [
         "sort_order": 5,
     },
     {
+        "id": 42,
+        "category": "second_courses",
+        "name": "Лепёшка 100 г",
+        "description": "Свежая лепёшка, большая порция.",
+        "price": 100,
+        "sort_order": 6,
+    },
+    {
+        "id": 43,
+        "category": "second_courses",
+        "name": "Лепёшка 50 г",
+        "description": "Свежая лепёшка, средняя порция.",
+        "price": 50,
+        "sort_order": 7,
+    },
+    {
+        "id": 44,
+        "category": "second_courses",
+        "name": "Лепёшка 25 г",
+        "description": "Свежая лепёшка, малая порция.",
+        "price": 25,
+        "sort_order": 8,
+    },
+    {
         "id": 20,
         "category": "samsa",
         "name": "Самса из курицы",
@@ -500,6 +525,19 @@ MENU_SEED: list[dict[str, Any]] = [
     },
 ]
 
+VARIANT_GROUPS: dict[str, dict[str, Any]] = {
+    "lepeshka": {
+        "name": "Лепёшка",
+        "description": "Свежая лепёшка. Выберите размер.",
+        "item_ids": [42, 43, 44],
+        "labels": {42: "100 г", 43: "50 г", 44: "25 г"},
+    },
+}
+ITEM_TO_VARIANT_GROUP: dict[int, str] = {}
+for _group_key, _group_data in VARIANT_GROUPS.items():
+    for _item_id in _group_data["item_ids"]:
+        ITEM_TO_VARIANT_GROUP[_item_id] = _group_key
+
 bot: Bot | None = None
 bot_polling_task: asyncio.Task[None] | None = None
 dispatcher = Dispatcher()
@@ -629,14 +667,14 @@ def format_order_for_cashier(order: Order) -> str:
     )
     status_labels = {
         "created": "Создан",
-        "paid": "Оплачен (тест)",
+        "paid": "Оплачен",
         "preparing": "Готовится",
         "ready": "Готов",
     }
     return (
         f"<b>Заказ №{order.public_order_number}</b>\n"
         f"Статус: <b>{status_labels.get(order.status, order.status)}</b>\n"
-        f"Тип оплаты: <b>СБП тест</b>\n"
+        f"Оплата: <b>СБП</b>\n"
         f"Клиент Telegram ID: <code>{order.telegram_user_id}</code>\n\n"
         f"{item_lines}\n\n"
         f"<b>Сумма:</b> {rub(order.total_amount)}"
@@ -755,7 +793,7 @@ async def handle_start(message: Message) -> None:
     )
     text = (
         "Онлайн-заказ кафе открыт.\n"
-        "Выберите блюда, оформите тестовый заказ и ждите уведомления о статусе в Telegram."
+        "Выберите блюда, оформите заказ и ждите уведомления о статусе в Telegram."
     )
     await message.answer(text, reply_markup=keyboard)
 
@@ -767,7 +805,7 @@ async def handle_admin(message: Message) -> None:
     with db_session() as session:
         save_setting(session, "admin_chat_id", str(message.chat.id))
     await message.answer(
-        "Этот чат назначен кассой. Сюда будут приходить тестовые оплаченные заказы."
+        "Этот чат назначен кассой. Сюда будут приходить оплаченные заказы."
     )
 
 
@@ -886,25 +924,59 @@ async def get_menu() -> dict[str, Any]:
             select(MenuItem).where(MenuItem.is_available.is_(True)).order_by(MenuItem.category, MenuItem.sort_order)
         ).all()
 
+    items_by_id = {item.id: item for item in items}
     grouped: dict[str, list[dict[str, Any]]] = {entry["slug"]: [] for entry in CATEGORY_META}
+    seen_variant_groups: set[str] = set()
+
     for item in items:
-        grouped[item.category].append(serialize_menu_item(item))
+        group_key = ITEM_TO_VARIANT_GROUP.get(item.id)
+        if group_key:
+            if group_key in seen_variant_groups:
+                continue
+            seen_variant_groups.add(group_key)
+            group_data = VARIANT_GROUPS[group_key]
+            variant_items = [items_by_id[iid] for iid in group_data["item_ids"] if iid in items_by_id]
+            if not variant_items:
+                continue
+            primary = variant_items[0]
+            grouped[item.category].append({
+                "id": primary.id,
+                "category": item.category,
+                "category_title": CATEGORY_BY_SLUG[item.category]["title"],
+                "name": group_data["name"],
+                "description": group_data["description"],
+                "price": primary.price,
+                "image_url": f"/api/placeholders/{primary.id}.svg",
+                "is_available": True,
+                "sort_order": primary.sort_order,
+                "variants": [
+                    {"id": vi.id, "label": group_data["labels"][vi.id], "price": vi.price}
+                    for vi in variant_items
+                ],
+            })
+        else:
+            grouped[item.category].append(serialize_menu_item(item))
 
     categories = []
     for entry in CATEGORY_META:
         category_items = grouped.get(entry["slug"], [])
         if not category_items:
             continue
-        categories.append(
-            {
-                "slug": entry["slug"],
-                "title": entry["title"],
-                "subtitle": entry["subtitle"],
-                "items": category_items,
-            }
-        )
+        cat_data: dict[str, Any] = {
+            "slug": entry["slug"],
+            "title": entry["title"],
+            "subtitle": entry["subtitle"],
+            "items": category_items,
+        }
+        if entry.get("note"):
+            cat_data["note"] = entry["note"]
+        categories.append(cat_data)
 
-    return {"categories": categories, "items_count": sum(len(category["items"]) for category in categories)}
+    return {
+        "categories": categories,
+        "items_count": sum(len(category["items"]) for category in categories),
+        "global_note": "Чай чёрный/зелёный 200 мл — бесплатно к каждому заказу",
+    }
 
 
 @app.get("/api/orders/{order_id}")
@@ -1015,13 +1087,6 @@ async def menu_placeholder(item_id: int) -> Response:
 
     category = CATEGORY_BY_SLUG[item.category]
     primary, secondary = category["colors"]
-    lines = split_label(item.name)
-    line_nodes = []
-    y = 172
-    for index, line in enumerate(lines):
-        line_nodes.append(
-            f'<text x="38" y="{y + index * 36}" fill="#FFF8EF" font-size="28" font-weight="700" font-family="Arial, sans-serif">{escape(line)}</text>'
-        )
 
     svg = f"""
     <svg xmlns="http://www.w3.org/2000/svg" width="800" height="520" viewBox="0 0 800 520">
@@ -1031,13 +1096,10 @@ async def menu_placeholder(item_id: int) -> Response:
           <stop offset="100%" stop-color="{secondary}" />
         </linearGradient>
       </defs>
-      <rect width="800" height="520" fill="url(#bg)" rx="32" />
-      <circle cx="700" cy="88" r="118" fill="rgba(255,255,255,0.08)" />
-      <circle cx="120" cy="430" r="150" fill="rgba(255,248,239,0.08)" />
-      <text x="38" y="72" fill="rgba(255,248,239,0.78)" font-size="22" letter-spacing="2" font-family="Arial, sans-serif">{escape(category["title"].upper())}</text>
-      {''.join(line_nodes)}
-      <text x="38" y="430" fill="#FFF8EF" font-size="38" font-weight="700" font-family="Arial, sans-serif">{escape(rub(item.price))}</text>
-      <text x="38" y="470" fill="rgba(255,248,239,0.82)" font-size="18" font-family="Arial, sans-serif">Фото будет добавлено на следующем этапе</text>
+      <rect width="800" height="520" fill="url(#bg)" rx="0" />
+      <circle cx="680" cy="100" r="180" fill="rgba(255,255,255,0.06)" />
+      <circle cx="150" cy="420" r="200" fill="rgba(255,248,239,0.05)" />
+      <circle cx="400" cy="260" r="80" fill="rgba(255,255,255,0.04)" />
     </svg>
     """.strip()
     return Response(content=svg, media_type="image/svg+xml")
