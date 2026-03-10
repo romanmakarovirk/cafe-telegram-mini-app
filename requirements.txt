@@ -1,4 +1,4 @@
-aiogram>=3.21,<4.0
+aiogram>=3.24,<4.0
 fastapi>=0.116,<1.0
 pydantic>=2.11,<3.0
 psycopg[binary]>=3.2,<4.0

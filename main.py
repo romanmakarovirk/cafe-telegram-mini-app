@@ -687,12 +687,14 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🟡 Готовится",
+                        text="Готовится",
                         callback_data=f"order:preparing:{order_id}",
+                        style="primary",
                     ),
                     InlineKeyboardButton(
-                        text="🟢 Готов",
+                        text="Готов",
                         callback_data=f"order:ready:{order_id}",
+                        style="success",
                     ),
                 ]
             ]
@@ -702,8 +704,9 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🟢 Готов к выдаче",
+                        text="Готов к выдаче",
                         callback_data=f"order:ready:{order_id}",
+                        style="success",
                     )
                 ]
             ]
