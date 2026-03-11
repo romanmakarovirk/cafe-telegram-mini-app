@@ -1113,8 +1113,18 @@ app.add_middleware(
 
 
 @app.get("/", include_in_schema=False)
-async def serve_index() -> FileResponse:
-    return FileResponse(BASE_DIR / "index.html")
+async def serve_index() -> Response:
+    import mimetypes
+    content = (BASE_DIR / "index.html").read_bytes()
+    return Response(
+        content=content,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/healthz")

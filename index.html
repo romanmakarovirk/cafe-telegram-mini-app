@@ -1872,6 +1872,7 @@
     document.getElementById("sbp-done").addEventListener("click", finishPayment);
 
     async function checkout() {
+      console.log("[checkout] tg:", !!tg, "initData:", tg ? tg.initData?.length : "no_tg");
       if (cafeSchedule && !cafeSchedule.is_open) {
         showToast("Кафе сейчас закрыто. Заказы не принимаются.", "error");
         return;
