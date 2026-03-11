@@ -283,6 +283,11 @@
       color: var(--tg-text-color);
       line-height: 1.25;
       margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
     }
 
     .card-body p {
@@ -1310,7 +1315,11 @@
 
       if (!cafeSchedule.is_open) {
         hoursDot.classList.add("closed");
-        closedOverlay.classList.add("visible");
+        // Don't show closed overlay if SBP payment is in progress
+        if (!sbpModal.classList.contains("open")) {
+          closedOverlay.classList.add("visible");
+          closeCart();
+        }
         closingWarning.classList.remove("visible");
         cartButton.style.display = "none";
       } else {
@@ -1456,7 +1465,9 @@
     }
 
     function updateCartBadge() {
-      cartCount.textContent = String(totalItemsCount());
+      const count = totalItemsCount();
+      cartCount.textContent = String(count);
+      cartCount.style.display = count > 0 ? "" : "none";
     }
 
     function saveCart() {
@@ -1662,10 +1673,14 @@
     function openCart() {
       renderCart();
       cartModal.classList.add("open");
+      document.body.style.overflow = "hidden";
     }
 
     function closeCart() {
       cartModal.classList.remove("open");
+      if (!sbpModal.classList.contains("open")) {
+        document.body.style.overflow = "";
+      }
     }
 
     function showOrderSummary(order) {
@@ -1679,6 +1694,18 @@
       orderSummary.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
+    function cleanupStaleCart() {
+      const staleIds = [];
+      cart.forEach((qty, itemId) => {
+        if (!findMenuItem(itemId)) staleIds.push(itemId);
+      });
+      if (staleIds.length) {
+        staleIds.forEach(id => cart.delete(id));
+        saveCart();
+        updateCartBadge();
+      }
+    }
+
     async function fetchMenu() {
       const response = await fetch("/api/menu");
       if (!response.ok) throw new Error("Не удалось загрузить меню.");
@@ -1687,8 +1714,10 @@
       globalNote = payload.global_note || "";
       if (payload.schedule) cafeSchedule = payload.schedule;
       renderMenu();
+      cleanupStaleCart();
       updateScheduleUI();
-      if (!scheduleCheckInterval) scheduleCheckInterval = setInterval(checkSchedule, 60000);
+      if (scheduleCheckInterval) clearInterval(scheduleCheckInterval);
+      scheduleCheckInterval = setInterval(checkSchedule, 60000);
     }
 
     // --- SBP Payment Flow ---
@@ -1732,8 +1761,15 @@
       updateTimerDisplay();
       sbpTimerInterval = setInterval(() => {
         sbpTimeLeft--;
+        if (sbpTimeLeft <= 0) {
+          clearInterval(sbpTimerInterval);
+          sbpTimerInterval = null;
+          closeSbpModal();
+          showToast("Время ожидания оплаты истекло. Попробуйте снова.", "error");
+          payButton.disabled = false;
+          return;
+        }
         updateTimerDisplay();
-        if (sbpTimeLeft <= 0) clearInterval(sbpTimerInterval);
       }, 1000);
     }
 
@@ -1754,12 +1790,17 @@
       sbpProcessingScreen.style.display = "none";
       sbpSuccessScreen.style.display = "none";
       sbpModal.classList.add("open");
+      document.body.style.overflow = "hidden";
       startSbpTimer();
     }
 
     function closeSbpModal() {
       sbpModal.classList.remove("open");
-      clearInterval(sbpTimerInterval);
+      document.body.style.overflow = "";
+      if (sbpTimerInterval) {
+        clearInterval(sbpTimerInterval);
+        sbpTimerInterval = null;
+      }
     }
 
     async function simulatePayment() {
@@ -1798,6 +1839,10 @@
         showOrderSummary(currentPaymentOrder);
         showToast(`Заказ №${currentPaymentOrder.public_order_number} оплачен.`);
         showReviewCard(currentPaymentOrder);
+      }
+      // Show closed overlay if cafe closed during payment
+      if (cafeSchedule && !cafeSchedule.is_open) {
+        document.getElementById("closed-overlay").classList.add("visible");
       }
     }
 
@@ -1899,8 +1944,8 @@
 
     fetchMenu().then(() => {
       loaderMsg.remove();
-    }).catch((error) => {
-      menuRoot.innerHTML = `<div class="error-box">Ошибка: ${esc(error.message || "Не удалось загрузить меню.")} | URL: ${window.location.href}</div>`;
+    }).catch(() => {
+      menuRoot.innerHTML = `<div class="error-box">Не удалось загрузить меню. Попробуйте перезагрузить страницу.</div>`;
     });
   </script>
 </body>

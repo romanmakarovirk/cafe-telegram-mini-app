@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 try:
@@ -861,22 +862,34 @@ async def handle_admin(message: Message) -> None:
     )
 
 
+VALID_STATUS_TRANSITIONS: dict[str, list[str]] = {
+    "paid": ["preparing", "ready"],
+    "preparing": ["ready"],
+}
+
+
 @router.callback_query(F.data.startswith("order:"))
 async def handle_order_status_change(callback: CallbackQuery) -> None:
     if callback.data is None or callback.message is None:
         await callback.answer("Некорректные данные.")
         return
 
-    _, action, raw_order_id = callback.data.split(":")
-    order_id = int(raw_order_id)
+    try:
+        _, action, raw_order_id = callback.data.split(":")
+        order_id = int(raw_order_id)
+    except (ValueError, TypeError):
+        await callback.answer("Некорректные данные.")
+        return
 
     with db_session() as session:
         order = fetch_order(session, order_id)
 
+        allowed = VALID_STATUS_TRANSITIONS.get(order.status, [])
+        if action not in allowed:
+            await callback.answer("Невозможно изменить статус заказа.")
+            return
+
         if action == "preparing":
-            if order.status == "ready":
-                await callback.answer("Заказ уже отмечен как готовый.")
-                return
             order.status = "preparing"
             order.updated_at = now_utc()
             session.commit()
@@ -1086,50 +1099,57 @@ async def create_order(payload: CreateOrderRequest) -> dict[str, Any]:
     for item in payload.items:
         requested_quantities[item.item_id] = requested_quantities.get(item.item_id, 0) + item.quantity
 
-    with db_session() as session:
-        db_items = session.scalars(
-            select(MenuItem).where(MenuItem.id.in_(requested_quantities.keys()), MenuItem.is_available.is_(True))
-        ).all()
-        menu_items = {item.id: item for item in db_items}
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with db_session() as session:
+                db_items = session.scalars(
+                    select(MenuItem).where(MenuItem.id.in_(requested_quantities.keys()), MenuItem.is_available.is_(True))
+                ).all()
+                menu_items = {item.id: item for item in db_items}
 
-        if len(menu_items) != len(requested_quantities):
-            raise HTTPException(status_code=400, detail="Some menu items are unavailable.")
+                if len(menu_items) != len(requested_quantities):
+                    raise HTTPException(status_code=400, detail="Some menu items are unavailable.")
 
-        total = 0
-        order = Order(
-            public_order_number=next_public_order_number(session),
-            telegram_user_id=payload.user_id,
-            total_amount=0,
-            status="created",
-            payment_status="pending",
-            payment_mode="mock",
-            created_at=now_utc(),
-            updated_at=now_utc(),
-        )
-        session.add(order)
-        session.flush()
-
-        for item_id, quantity in requested_quantities.items():
-            menu_item = menu_items[item_id]
-            subtotal = menu_item.price * quantity
-            total += subtotal
-            session.add(
-                OrderItem(
-                    order_id=order.id,
-                    menu_item_id=menu_item.id,
-                    name_snapshot=menu_item.name,
-                    price_snapshot=menu_item.price,
-                    quantity=quantity,
-                    subtotal=subtotal,
+                total = 0
+                order = Order(
+                    public_order_number=next_public_order_number(session),
+                    telegram_user_id=payload.user_id,
+                    total_amount=0,
+                    status="created",
+                    payment_status="pending",
+                    payment_mode="mock",
+                    created_at=now_utc(),
+                    updated_at=now_utc(),
                 )
-            )
+                session.add(order)
+                session.flush()
 
-        order.total_amount = total
-        order.updated_at = now_utc()
-        session.commit()
-        session.refresh(order)
-        _ = order.items
-        return serialize_order(order)
+                for item_id, quantity in requested_quantities.items():
+                    menu_item = menu_items[item_id]
+                    subtotal = menu_item.price * quantity
+                    total += subtotal
+                    session.add(
+                        OrderItem(
+                            order_id=order.id,
+                            menu_item_id=menu_item.id,
+                            name_snapshot=menu_item.name,
+                            price_snapshot=menu_item.price,
+                            quantity=quantity,
+                            subtotal=subtotal,
+                        )
+                    )
+
+                order.total_amount = total
+                order.updated_at = now_utc()
+                session.commit()
+                session.refresh(order)
+                _ = order.items
+                return serialize_order(order)
+        except IntegrityError:
+            if attempt == max_retries - 1:
+                raise HTTPException(status_code=500, detail="Не удалось создать заказ. Попробуйте ещё раз.")
+            continue
 
 
 @app.post("/api/orders/{order_id}/confirm-payment")
