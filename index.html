@@ -1825,7 +1825,12 @@
           method: "POST",
           headers: apiHeaders(),
         });
-        if (!resp.ok) throw new Error("Ошибка подтверждения оплаты.");
+        if (!resp.ok) {
+          let errMsg = "Ошибка подтверждения оплаты.";
+          try { const errData = await resp.json(); errMsg = errData.detail || errMsg; } catch {}
+          console.error("confirm-payment error:", resp.status, errMsg);
+          throw new Error(errMsg);
+        }
         const confirmed = await resp.json();
         currentPaymentOrder = confirmed;
 
@@ -1889,7 +1894,12 @@
           headers: apiHeaders(),
           body: JSON.stringify({ items })
         });
-        if (!createResponse.ok) throw new Error("Не удалось создать заказ.");
+        if (!createResponse.ok) {
+          let errMsg = "Не удалось создать заказ.";
+          try { const errData = await createResponse.json(); errMsg = errData.detail || errMsg; } catch {}
+          console.error("create_order error:", createResponse.status, errMsg);
+          throw new Error(errMsg);
+        }
         const order = await createResponse.json();
         closeCart();
         openSbpPayment(order);

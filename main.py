@@ -567,8 +567,11 @@ ADMIN_CHAT_ID: int | None = INITIAL_ADMIN_CHAT_ID
 # ---------------------------------------------------------------------------
 #  Telegram InitData verification (HMAC-SHA256)
 # ---------------------------------------------------------------------------
-def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
-    """Verify Telegram WebApp initData signature and return user dict or None."""
+def verify_telegram_init_data(init_data: str, bot_token: str) -> tuple[dict | None, str]:
+    """Verify Telegram WebApp initData signature.
+
+    Returns (user_dict, "") on success or (None, reason) on failure.
+    """
     parsed: dict[str, str] = {}
     for part in init_data.split("&"):
         key, _, value = part.partition("=")
@@ -577,16 +580,17 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
 
     received_hash = parsed.pop("hash", None)
     if not received_hash:
-        return None
+        return None, "no_hash"
 
     # Check auth_date freshness (max 24 hours)
     auth_date = parsed.get("auth_date")
     if auth_date:
         try:
-            if (time_module.time() - int(auth_date)) > 86400:
-                return None
+            age = time_module.time() - int(auth_date)
+            if age > 86400:
+                return None, f"auth_date_expired(age={int(age)}s)"
         except (ValueError, TypeError):
-            return None
+            return None, "auth_date_invalid"
 
     # Data-check-string: sorted key=value pairs joined by \n
     data_check_string = "\n".join(
@@ -597,15 +601,19 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
     computed = hmac.new(secret, data_check_string.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(computed, received_hash):
-        return None
+        logging.warning(
+            "InitData HMAC mismatch: keys=%s, hash_len=%d, token_prefix=%s",
+            sorted(parsed.keys()), len(received_hash), bot_token[:8],
+        )
+        return None, "hmac_mismatch"
 
     user_raw = parsed.get("user")
     if user_raw:
         try:
-            return json_module.loads(unquote(user_raw))
+            return json_module.loads(unquote(user_raw)), ""
         except (json_module.JSONDecodeError, TypeError):
-            return None
-    return None
+            return None, "user_json_invalid"
+    return None, "no_user_field"
 
 
 def get_verified_user_id(request: Request) -> int:
@@ -613,13 +621,17 @@ def get_verified_user_id(request: Request) -> int:
     init_data = request.headers.get("X-Telegram-Init-Data", "")
 
     if init_data and BOT_TOKEN:
-        user = verify_telegram_init_data(init_data, BOT_TOKEN)
+        user, reason = verify_telegram_init_data(init_data, BOT_TOKEN)
         if user and user.get("id"):
             return int(user["id"])
-        raise HTTPException(status_code=401, detail="Invalid Telegram authorization.")
+        logging.warning("Auth failed: reason=%s, initData_len=%d, path=%s",
+                        reason, len(init_data), request.url.path)
+        raise HTTPException(status_code=401, detail=f"Invalid Telegram authorization ({reason}).")
 
-    # Dev fallback: only when BOT_TOKEN is empty (local development)
+    if not init_data:
+        logging.warning("Auth failed: no X-Telegram-Init-Data header, path=%s", request.url.path)
     if not BOT_TOKEN:
+        # Dev fallback: only when BOT_TOKEN is empty (local development)
         user_id = request.query_params.get("dev_user_id")
         if user_id:
             try:
