@@ -776,6 +776,18 @@ def initialize_database() -> None:
             ADMIN_CHAT_ID = int(saved_admin_chat_id)
 
 
+def _resolve_image_url(item: MenuItem) -> str:
+    """Return photo URL if a real photo exists, else SVG placeholder."""
+    if item.image_url and not item.image_url.startswith("/api/placeholders/"):
+        return item.image_url
+    # Check for local photo file (jpg/webp/png)
+    for ext in ("jpg", "jpeg", "webp", "png"):
+        photo_path = BASE_DIR / "photos" / f"{item.id}.{ext}"
+        if photo_path.exists():
+            return f"/api/photos/{item.id}.{ext}"
+    return f"/api/placeholders/{item.id}.svg"
+
+
 def serialize_menu_item(item: MenuItem) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -784,7 +796,7 @@ def serialize_menu_item(item: MenuItem) -> dict[str, Any]:
         "name": item.name,
         "description": item.description,
         "price": item.price,
-        "image_url": item.image_url or f"/api/placeholders/{item.id}.svg",
+        "image_url": _resolve_image_url(item),
         "is_available": item.is_available,
         "sort_order": item.sort_order,
     }
@@ -1166,7 +1178,7 @@ async def get_menu(request: Request) -> dict[str, Any]:
                 "name": group_data["name"],
                 "description": group_data["description"],
                 "price": primary.price,
-                "image_url": f"/api/placeholders/{primary.id}.svg",
+                "image_url": _resolve_image_url(primary),
                 "is_available": True,
                 "sort_order": primary.sort_order,
                 "variants": [
@@ -1329,6 +1341,19 @@ def split_label(text: str, max_line_length: int = 18) -> list[str]:
     if current:
         lines.append(current)
     return lines[:3]
+
+
+@app.get("/api/photos/{filename}", include_in_schema=False)
+async def serve_photo(filename: str) -> FileResponse:
+    """Serve menu item photos from the photos/ directory."""
+    safe_name = Path(filename).name  # prevent path traversal
+    photo_path = BASE_DIR / "photos" / safe_name
+    if not photo_path.exists() or not photo_path.is_file():
+        raise HTTPException(status_code=404, detail="Photo not found.")
+    return FileResponse(
+        photo_path,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.get("/api/placeholders/{item_id}.svg", include_in_schema=False)
