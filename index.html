@@ -1404,8 +1404,8 @@
         try {
           const resp = await fetch("/api/reviews", {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ order_id: order.order_id, user_id: getTelegramUserId(), rating: selectedRating, comment }),
+            headers: apiHeaders(),
+            body: JSON.stringify({ order_id: order.order_id, rating: selectedRating, comment }),
           });
           if (!resp.ok) throw new Error("Ошибка");
           markOrderReviewed(order.order_id);
@@ -1445,8 +1445,17 @@
       if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
         return Number(tg.initDataUnsafe.user.id);
       }
+      // Dev fallback only (requires backend BOT_TOKEN to be empty)
       const params = new URLSearchParams(window.location.search);
-      return Number(params.get("user_id") || 0);
+      return Number(params.get("dev_user_id") || 0);
+    }
+
+    function apiHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      if (tg && tg.initData) {
+        headers["X-Telegram-Init-Data"] = tg.initData;
+      }
+      return headers;
     }
 
     function totalItemsCount() {
@@ -1812,7 +1821,10 @@
       await new Promise(r => setTimeout(r, 2500));
 
       try {
-        const resp = await fetch(`/api/orders/${currentPaymentOrder.order_id}/confirm-payment`, { method: "POST" });
+        const resp = await fetch(`/api/orders/${currentPaymentOrder.order_id}/confirm-payment`, {
+          method: "POST",
+          headers: apiHeaders(),
+        });
         if (!resp.ok) throw new Error("Ошибка подтверждения оплаты.");
         const confirmed = await resp.json();
         currentPaymentOrder = confirmed;
@@ -1859,9 +1871,8 @@
         showToast("Кафе сейчас закрыто. Заказы не принимаются.", "error");
         return;
       }
-      const userId = getTelegramUserId();
-      if (!userId) {
-        showToast("Откройте приложение из Telegram или добавьте ?user_id=ID.", "error");
+      if (!tg || !tg.initData) {
+        showToast("Откройте приложение из Telegram для оформления заказа.", "error");
         return;
       }
       const items = Array.from(cart.entries()).map(([itemId, quantity]) => ({
@@ -1875,8 +1886,8 @@
       try {
         const createResponse = await fetch("/api/create_order", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: userId, items })
+          headers: apiHeaders(),
+          body: JSON.stringify({ items })
         });
         if (!createResponse.ok) throw new Error("Не удалось создать заказ.");
         const order = await createResponse.json();

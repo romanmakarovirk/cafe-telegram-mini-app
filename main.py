@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json as json_module
 import logging
 import os
+import time as time_module
+from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -22,7 +28,7 @@ from aiogram.types import (
     Message,
     WebAppInfo,
 )
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -558,19 +564,106 @@ dispatcher.include_router(router)
 ADMIN_CHAT_ID: int | None = INITIAL_ADMIN_CHAT_ID
 
 
+# ---------------------------------------------------------------------------
+#  Telegram InitData verification (HMAC-SHA256)
+# ---------------------------------------------------------------------------
+def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
+    """Verify Telegram WebApp initData signature and return user dict or None."""
+    parsed: dict[str, str] = {}
+    for part in init_data.split("&"):
+        key, _, value = part.partition("=")
+        if key:
+            parsed[key] = value
+
+    received_hash = parsed.pop("hash", None)
+    if not received_hash:
+        return None
+
+    # Check auth_date freshness (max 24 hours)
+    auth_date = parsed.get("auth_date")
+    if auth_date:
+        try:
+            if (time_module.time() - int(auth_date)) > 86400:
+                return None
+        except (ValueError, TypeError):
+            return None
+
+    # Data-check-string: sorted key=value pairs joined by \n
+    data_check_string = "\n".join(
+        f"{k}={unquote(v)}" for k, v in sorted(parsed.items())
+    )
+
+    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    computed = hmac.new(secret, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(computed, received_hash):
+        return None
+
+    user_raw = parsed.get("user")
+    if user_raw:
+        try:
+            return json_module.loads(unquote(user_raw))
+        except (json_module.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def get_verified_user_id(request: Request) -> int:
+    """Extract verified Telegram user ID from request headers."""
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+
+    if init_data and BOT_TOKEN:
+        user = verify_telegram_init_data(init_data, BOT_TOKEN)
+        if user and user.get("id"):
+            return int(user["id"])
+        raise HTTPException(status_code=401, detail="Invalid Telegram authorization.")
+
+    # Dev fallback: only when BOT_TOKEN is empty (local development)
+    if not BOT_TOKEN:
+        user_id = request.query_params.get("dev_user_id")
+        if user_id:
+            try:
+                return int(user_id)
+            except (ValueError, TypeError):
+                pass
+
+    raise HTTPException(status_code=401, detail="Authorization required.")
+
+
+# ---------------------------------------------------------------------------
+#  Simple in-memory rate limiter
+# ---------------------------------------------------------------------------
+class SimpleRateLimiter:
+    def __init__(self, max_requests: int, window: int):
+        self.max = max_requests
+        self.window = window
+        self.hits: dict[str, list[float]] = defaultdict(list)
+
+    def check(self, key: str) -> bool:
+        now = time_module.time()
+        self.hits[key] = [t for t in self.hits[key] if now - t < self.window]
+        if len(self.hits[key]) >= self.max:
+            return False
+        self.hits[key].append(now)
+        return True
+
+
+order_limiter = SimpleRateLimiter(max_requests=10, window=60)    # 10 orders/min per user
+review_limiter = SimpleRateLimiter(max_requests=5, window=60)    # 5 reviews/min per user
+general_limiter = SimpleRateLimiter(max_requests=60, window=60)  # 60 req/min per IP
+
+
 class CartItem(BaseModel):
     item_id: int
     quantity: int = Field(gt=0, le=50)
 
 
 class CreateOrderRequest(BaseModel):
-    user_id: int = Field(gt=0)
     items: list[CartItem]
 
 
 class SubmitReviewRequest(BaseModel):
     order_id: int = Field(gt=0)
-    user_id: int = Field(gt=0)
     rating: int = Field(ge=1, le=5)
     comment: str = Field(default="", max_length=1000)
 
@@ -988,12 +1081,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = list(
+    filter(
+        None,
+        [
+            APP_BASE_URL,
+            WEBAPP_URL if WEBAPP_URL != APP_BASE_URL else None,
+            "https://cafe-telegram-mini-app.onrender.com",
+        ],
+    )
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Telegram-Init-Data"],
 )
 
 
@@ -1009,7 +1112,11 @@ async def healthcheck() -> dict[str, str]:
 
 
 @app.get("/api/menu")
-async def get_menu() -> dict[str, Any]:
+async def get_menu(request: Request) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    if not general_limiter.check(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait.")
+
     with db_session() as session:
         items = session.scalars(
             select(MenuItem).where(MenuItem.is_available.is_(True)).order_by(MenuItem.category, MenuItem.sort_order)
@@ -1077,14 +1184,22 @@ async def get_schedule() -> dict[str, Any]:
 
 
 @app.get("/api/orders/{order_id}")
-async def get_order(order_id: int) -> dict[str, Any]:
+async def get_order(order_id: int, request: Request) -> dict[str, Any]:
+    verified_user_id = get_verified_user_id(request)
     with db_session() as session:
         order = fetch_order(session, order_id)
+        if order.telegram_user_id != verified_user_id:
+            raise HTTPException(status_code=403, detail="Access denied.")
         return serialize_order(order)
 
 
 @app.post("/api/create_order")
-async def create_order(payload: CreateOrderRequest) -> dict[str, Any]:
+async def create_order(payload: CreateOrderRequest, request: Request) -> dict[str, Any]:
+    verified_user_id = get_verified_user_id(request)
+
+    if not order_limiter.check(str(verified_user_id)):
+        raise HTTPException(status_code=429, detail="Слишком много заказов. Подождите минуту.")
+
     if not payload.items:
         raise HTTPException(status_code=400, detail="Cart is empty.")
 
@@ -1114,7 +1229,7 @@ async def create_order(payload: CreateOrderRequest) -> dict[str, Any]:
                 total = 0
                 order = Order(
                     public_order_number=next_public_order_number(session),
-                    telegram_user_id=payload.user_id,
+                    telegram_user_id=verified_user_id,
                     total_amount=0,
                     status="created",
                     payment_status="pending",
@@ -1153,9 +1268,14 @@ async def create_order(payload: CreateOrderRequest) -> dict[str, Any]:
 
 
 @app.post("/api/orders/{order_id}/confirm-payment")
-async def confirm_payment(order_id: int) -> dict[str, Any]:
+async def confirm_payment(order_id: int, request: Request) -> dict[str, Any]:
+    verified_user_id = get_verified_user_id(request)
+
     with db_session() as session:
         order = fetch_order(session, order_id)
+        if order.telegram_user_id != verified_user_id:
+            raise HTTPException(status_code=403, detail="Access denied.")
+
         if order.payment_status == "paid":
             return serialize_order(order)
 
@@ -1227,18 +1347,23 @@ async def app_config() -> dict[str, Any]:
 
 
 @app.post("/api/reviews")
-async def submit_review(payload: SubmitReviewRequest) -> dict[str, str]:
+async def submit_review(payload: SubmitReviewRequest, request: Request) -> dict[str, str]:
+    verified_user_id = get_verified_user_id(request)
+
+    if not review_limiter.check(str(verified_user_id)):
+        raise HTTPException(status_code=429, detail="Слишком много отзывов. Подождите минуту.")
+
     with db_session() as session:
         order = session.get(Order, payload.order_id)
         if order is None:
             raise HTTPException(status_code=404, detail="Order not found.")
-        if order.telegram_user_id != payload.user_id:
+        if order.telegram_user_id != verified_user_id:
             raise HTTPException(status_code=403, detail="Not your order.")
 
         existing = session.scalars(
             select(Review).where(
                 Review.order_id == payload.order_id,
-                Review.telegram_user_id == payload.user_id,
+                Review.telegram_user_id == verified_user_id,
             )
         ).first()
         if existing:
@@ -1246,7 +1371,7 @@ async def submit_review(payload: SubmitReviewRequest) -> dict[str, str]:
 
         review = Review(
             order_id=payload.order_id,
-            telegram_user_id=payload.user_id,
+            telegram_user_id=verified_user_id,
             rating=payload.rating,
             comment=payload.comment.strip() if payload.comment else "",
             created_at=now_utc(),
