@@ -5,3 +5,13 @@ __pycache__/
 *.pyo
 *.db
 app.db
+node_modules/
+.DS_Store
+*.log
+.claude/
+commercial_proposal.*
+setup_guide.pdf
+generate_*.py
+generate_*.js
+package.json
+package-lock.json

@@ -6,7 +6,7 @@
   <title>Кафе | Тестовый онлайн-заказ</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
   <style>
     :root {
       --tg-bg-color: var(--tg-theme-bg-color, #f7efe4);
@@ -328,6 +328,178 @@
       border-radius: 14px;
       font-weight: 800;
     }
+
+    /* Стоп-лист: недоступные блюда */
+    .card--unavailable {
+      opacity: 0.5;
+      filter: grayscale(0.5);
+    }
+    .card--unavailable img {
+      filter: grayscale(0.7);
+    }
+    .unavailable-label {
+      font-size: 12px;
+      color: var(--tg-hint-color, #999);
+      text-align: center;
+      padding: 8px 4px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .variant-pill--unavailable {
+      opacity: 0.4;
+      text-decoration: line-through;
+      pointer-events: none;
+    }
+
+    /* Search bar */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      margin-bottom: 10px;
+    }
+    .search-bar svg { flex-shrink: 0; color: var(--tg-hint-color); }
+    .search-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-size: 15px;
+      font-family: inherit;
+      color: var(--tg-text-color);
+    }
+    .search-input::placeholder { color: var(--tg-hint-color); }
+    .search-clear {
+      display: none;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(88, 59, 41, 0.1);
+      color: var(--tg-hint-color);
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+    .search-clear.visible { display: block; }
+
+    /* Order comment textarea */
+    .order-comment-area {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.7);
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--tg-text-color);
+      resize: vertical;
+      min-height: 50px;
+      max-height: 100px;
+      margin-bottom: 14px;
+      box-sizing: border-box;
+    }
+    .order-comment-area::placeholder { color: #a89888; }
+
+    /* Order history section */
+    .history-section { margin-top: 12px; margin-bottom: 16px; }
+    .history-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 18px;
+      border-radius: 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      width: 100%;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--tg-text-color);
+      cursor: pointer;
+    }
+    .history-list {
+      display: none;
+      margin-top: 10px;
+      gap: 10px;
+    }
+    .history-list.open { display: grid; }
+    .history-order {
+      padding: 16px;
+      border-radius: 20px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+    }
+    .history-order-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .history-order-header strong { font-size: 15px; color: #2d1f14; }
+    .history-order-header span { font-size: 13px; color: var(--tg-hint-color); }
+    .history-items { font-size: 13px; color: #6a5648; line-height: 1.5; margin-bottom: 10px; }
+    .history-repeat-btn {
+      padding: 8px 16px;
+      border-radius: 12px;
+      background: rgba(25, 98, 74, 0.1);
+      color: #205441;
+      font-weight: 700;
+      font-size: 13px;
+      border: none;
+      cursor: pointer;
+    }
+    .history-repeat-btn:hover { background: rgba(25, 98, 74, 0.18); }
+
+    /* Skeleton loading */
+    .skeleton-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+    .skeleton-card {
+      border-radius: var(--radius-lg);
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    .skeleton-img {
+      width: 100%;
+      height: 180px;
+      background: linear-gradient(90deg, #ebded1 25%, #f5ece3 50%, #ebded1 75%);
+      background-size: 200% 100%;
+      animation: skeleton-shimmer 1.5s ease-in-out infinite;
+    }
+    .skeleton-body { padding: 18px; }
+    .skeleton-line {
+      height: 14px;
+      border-radius: 7px;
+      background: linear-gradient(90deg, #e8ddd2 25%, #f2e9df 50%, #e8ddd2 75%);
+      background-size: 200% 100%;
+      animation: skeleton-shimmer 1.5s ease-in-out infinite;
+      margin-bottom: 10px;
+    }
+    .skeleton-line:last-child { width: 60%; margin-bottom: 0; }
+    @keyframes skeleton-shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+    /* Offline banner */
+    .offline-banner {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 70;
+      padding: 10px 16px;
+      background: rgba(130, 39, 30, 0.96);
+      color: #fff;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .offline-banner.visible { display: block; }
 
     .order-summary {
       display: none;
@@ -1083,7 +1255,11 @@
       }
 
       .card-body p {
-        display: none;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        font-size: 12px;
       }
 
       .card-footer {
@@ -1128,6 +1304,13 @@
         padding: 10px 12px;
         font-size: 13px;
       }
+
+      .skeleton-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+      .skeleton-img { height: 120px; }
+      .skeleton-body { padding: 8px 10px 10px; }
     }
   </style>
 </head>
@@ -1151,8 +1334,16 @@
       </div>
     </section>
 
+    <div class="offline-banner" id="offline-banner">Нет подключения к интернету</div>
+
     <div class="closing-warning" id="closing-warning"></div>
 
+    <!-- Search -->
+    <div class="search-bar" id="search-bar">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="search-input" id="search-input" type="text" placeholder="Поиск по меню…" autocomplete="off" />
+      <button class="search-clear" id="search-clear" type="button" aria-label="Очистить поиск">✕</button>
+    </div>
 
     <section class="order-summary" id="order-summary">
       <div class="summary-card">
@@ -1163,21 +1354,31 @@
 
     <div id="review-container"></div>
 
-    <nav class="category-rail" id="category-rail"></nav>
+    <!-- Order History -->
+    <section class="history-section" id="history-section" style="display:none">
+      <button class="history-toggle" id="history-toggle" type="button" aria-expanded="false">
+        📋 Мои заказы
+        <span id="history-count" style="color:var(--tg-hint-color);font-size:13px;margin-left:auto"></span>
+      </button>
+      <div class="history-list" id="history-list" role="region" aria-label="История заказов"></div>
+    </section>
+
+    <nav class="category-rail" id="category-rail" role="navigation" aria-label="Категории меню"></nav>
 
     <main id="menu-root">
-      <div class="loader" id="loader-msg">Загружаем меню кафе...</div>
+      <!-- Menu content loaded by JS -->
     </main>
 
     <div class="global-note" id="global-note" style="display:none"></div>
   </div>
 
-  <button class="cart-fab" id="cart-button" type="button">
+  <button class="cart-fab" id="cart-button" type="button" aria-label="Открыть корзину">
     <strong>Корзина</strong>
+    <span id="cart-sum" style="font-size:14px;font-weight:700;opacity:0.9"></span>
     <span class="cart-count" id="cart-count">0</span>
   </button>
 
-  <div class="modal" id="cart-modal">
+  <div class="modal" id="cart-modal" role="dialog" aria-modal="true" aria-label="Корзина">
     <div class="modal-sheet">
       <div class="modal-head">
         <div>
@@ -1188,6 +1389,8 @@
       </div>
 
       <div class="cart-items" id="cart-items"></div>
+
+      <textarea class="order-comment-area" id="order-comment" placeholder="Пожелания к заказу (необязательно)" maxlength="500"></textarea>
 
       <div class="checkout-card">
         <div class="checkout-row">
@@ -1202,7 +1405,7 @@
     </div>
   </div>
 
-  <div class="modal" id="sbp-modal">
+  <div class="modal" id="sbp-modal" role="dialog" aria-modal="true" aria-label="Оплата через СБП">
     <div class="modal-sheet sbp-sheet">
       <!-- QR Screen -->
       <div class="sbp-screen" id="sbp-qr-screen">
@@ -1221,7 +1424,7 @@
         </div>
         <div class="sbp-qr-container">
           <div class="sbp-qr-code" id="sbp-qr-code"></div>
-          <p class="sbp-qr-hint">Отсканируйте QR-код<br>в приложении вашего банка</p>
+          <p class="sbp-qr-hint">Нажмите кнопку ниже, чтобы<br>оплатить через приложение банка</p>
         </div>
         <div class="sbp-timer" id="sbp-timer">&#9201; <span id="sbp-timer-text">15:00</span></div>
         <button class="sbp-bank-button" id="sbp-open-bank" type="button">Открыть приложение банка</button>
@@ -1265,7 +1468,7 @@
     </div>
   </div>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>
@@ -1291,6 +1494,8 @@
     let toastTimer = null;
     let cafeSchedule = null;
     let scheduleCheckInterval = null;
+    let paymentTimeoutSeconds = 900; // default, updated from backend config
+    const cartSumEl = document.getElementById("cart-sum");
 
     function esc(str) {
       const el = document.createElement("span");
@@ -1375,7 +1580,7 @@
           <h3>Как вам заказ?</h3>
           <p>Оцените заказ — это поможет нам стать лучше</p>
           <div class="review-stars" id="review-stars">
-            ${[1,2,3,4,5].map(n => `<button type="button" class="review-star" data-rating="${n}">\u2605</button>`).join("")}
+            ${[1,2,3,4,5].map(n => `<button type="button" class="review-star" data-rating="${n}" aria-label="${n} звёзд">\u2605</button>`).join("")}
           </div>
           <textarea class="review-comment" id="review-comment" placeholder="Комментарий (необязательно)" maxlength="1000"></textarea>
           <div class="review-actions">
@@ -1485,6 +1690,8 @@
       const count = totalItemsCount();
       cartCount.textContent = String(count);
       cartCount.style.display = count > 0 ? "" : "none";
+      const sum = totalPrice();
+      cartSumEl.textContent = count > 0 ? formatPrice(sum) : "";
     }
 
     function saveCart() {
@@ -1513,7 +1720,31 @@
     }
 
     function addToCart(itemId) {
+      // Проверка: блюдо доступно?
+      const menuItem = findMenuItem(itemId);
+      if (menuItem && menuItem.is_available === false) {
+        showToast("Это блюдо временно недоступно.");
+        return;
+      }
+      // Проверка для вариантов: ищем по variant id
+      if (!menuItem) {
+        for (const cat of categories) {
+          for (const it of cat.items) {
+            if (it.variants) {
+              const variant = it.variants.find(v => v.id === itemId);
+              if (variant && variant.is_available === false) {
+                showToast("Этот вариант временно недоступен.");
+                return;
+              }
+            }
+          }
+        }
+      }
       const current = cart.get(itemId) || 0;
+      if (current >= 50) {
+        showToast("Максимум 50 штук одной позиции.", "error");
+        return;
+      }
       cart.set(itemId, current + 1);
       updateCartBadge();
       saveCart();
@@ -1529,6 +1760,9 @@
       const next = current + delta;
       if (next <= 0) {
         cart.delete(itemId);
+      } else if (next > 50) {
+        showToast("Максимум 50 штук.", "error");
+        return;
       } else {
         cart.set(itemId, next);
       }
@@ -1574,6 +1808,7 @@
     }
 
     function renderItemCard(item) {
+      const isUnavailable = item.is_available === false;
       const hasVariants = item.variants && item.variants.length > 1;
       const selectedId = hasVariants
         ? (selectedVariants.get(item.id) || item.variants[0].id)
@@ -1587,12 +1822,23 @@
       let variantHtml = "";
       if (hasVariants) {
         variantHtml = `<div class="variant-pills" data-variant-parent="${item.id}">` +
-          item.variants.map(v =>
-            `<button type="button" class="variant-pill${v.id === selectedId ? ' selected' : ''}" data-variant-id="${v.id}" data-variant-parent="${item.id}">${esc(v.label)} — ${formatPrice(v.price)}</button>`
-          ).join("") + `</div>`;
+          item.variants.map(v => {
+            const vUnavailable = v.is_available === false;
+            return `<button type="button" class="variant-pill${v.id === selectedId ? ' selected' : ''}${vUnavailable ? ' variant-pill--unavailable' : ''}" data-variant-id="${v.id}" data-variant-parent="${item.id}" ${vUnavailable ? 'disabled' : ''}>${esc(v.label)} — ${formatPrice(v.price)}</button>`;
+          }).join("") + `</div>`;
       }
 
-      return `<article class="card" data-card-item-id="${item.id}" ${hasVariants ? 'data-variant-group="true"' : ''}>
+      // Строка причины недоступности
+      let unavailableHtml = "";
+      if (isUnavailable) {
+        const reason = item.unavailable_reason || "Временно недоступно";
+        const timeStr = item.available_at_display || "";
+        unavailableHtml = `<div class="unavailable-label">${esc(reason)}${timeStr ? ' ' + esc(timeStr) : ''}</div>`;
+      }
+
+      const cardClass = isUnavailable ? "card card--unavailable" : "card";
+
+      return `<article class="${cardClass}" data-card-item-id="${item.id}" ${hasVariants ? 'data-variant-group="true"' : ''}>
         <img src="${esc(item.image_url)}" alt="${esc(item.name)}" loading="lazy" />
         <div class="card-body">
           <div>
@@ -1602,7 +1848,10 @@
           </div>
           <div class="card-footer">
             <span class="price" data-price-for="${item.id}">${formatPrice(displayPrice)}</span>
-            <button class="add-button" type="button" data-item-id="${addItemId}" data-add-for="${item.id}">Добавить</button>
+            ${isUnavailable
+              ? unavailableHtml
+              : `<button class="add-button" type="button" data-item-id="${addItemId}" data-add-for="${item.id}">Добавить</button>`
+            }
           </div>
         </div>
       </article>`;
@@ -1674,9 +1923,9 @@
         const qtyPanel = document.createElement("div");
         qtyPanel.className = "qty-panel";
         qtyPanel.innerHTML = `
-          <button class="qty-button" type="button" data-action="decrease" data-item-id="${item.id}">\u2212</button>
+          <button class="qty-button" type="button" data-action="decrease" data-item-id="${item.id}" aria-label="Уменьшить количество">\u2212</button>
           <span class="qty-value">${quantity}</span>
-          <button class="qty-button" type="button" data-action="increase" data-item-id="${item.id}">+</button>
+          <button class="qty-button" type="button" data-action="increase" data-item-id="${item.id}" aria-label="Увеличить количество">+</button>
         `;
 
         row.appendChild(info);
@@ -1704,8 +1953,9 @@
       orderSummary.classList.add("visible");
       const statusLabels = { paid: "Оплачен", preparing: "Готовится", ready: "Готов к выдаче" };
       document.getElementById("summary-title").textContent = `Заказ №${order.public_order_number}`;
+      const safeStatus = statusLabels[order.status] || esc(order.status);
       summaryText.innerHTML =
-        `Статус: <strong>${statusLabels[order.status] || order.status}</strong><br>` +
+        `Статус: <strong>${safeStatus}</strong><br>` +
         `Сумма: ${formatPrice(order.total)}<br>` +
         `Уведомления о готовности придут в Telegram.`;
       orderSummary.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1714,12 +1964,14 @@
     function cleanupStaleCart() {
       const staleIds = [];
       cart.forEach((qty, itemId) => {
-        if (!findMenuItem(itemId)) staleIds.push(itemId);
+        const item = findMenuItem(itemId);
+        if (!item || item.is_available === false) staleIds.push(itemId);
       });
       if (staleIds.length) {
         staleIds.forEach(id => cart.delete(id));
         saveCart();
         updateCartBadge();
+        if (staleIds.length) showToast("Некоторые позиции стали недоступны и убраны из корзины.");
       }
     }
 
@@ -1737,50 +1989,46 @@
       scheduleCheckInterval = setInterval(checkSchedule, 60000);
     }
 
-    // --- SBP Payment Flow ---
+    // --- SBP Payment Flow (Real Integration) ---
     const sbpModal = document.getElementById("sbp-modal");
     const sbpQrScreen = document.getElementById("sbp-qr-screen");
     const sbpProcessingScreen = document.getElementById("sbp-processing-screen");
     const sbpSuccessScreen = document.getElementById("sbp-success-screen");
     let currentPaymentOrder = null;
     let sbpTimerInterval = null;
-    let sbpTimeLeft = 900;
+    let sbpTimeLeft = paymentTimeoutSeconds;
+    let sbpPollingInterval = null;
+    let sbpDeeplink = "";
 
-    function generateMockQR(orderId) {
-      const size = 180;
-      const m = 29;
-      const c = size / m;
-      let seed = (orderId || 1) * 2654435761 >>> 0;
-      function rand() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
-
-      let rects = "";
-      function finderPattern(ox, oy) {
-        for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
-          const on = (y === 0 || y === 6 || x === 0 || x === 6) ||
-                     (y >= 2 && y <= 4 && x >= 2 && x <= 4);
-          if (on) rects += `<rect x="${(ox+x)*c}" y="${(oy+y)*c}" width="${c}" height="${c}"/>`;
-        }
+    /** Security: validate SBP payment URL protocol */
+    function isValidSbpUrl(url) {
+      if (!url) return false;
+      try {
+        const lower = url.toLowerCase();
+        // Allow sbp:// deeplinks
+        if (lower.startsWith("sbp://")) return true;
+        // Allow HTTPS payment URLs from known banking domains
+        const parsed = new URL(url);
+        if (parsed.protocol === "https:" && (
+          parsed.hostname.endsWith(".sberbank.ru") ||
+          parsed.hostname.endsWith(".nspk.ru") ||
+          parsed.hostname.endsWith(".sbrf.ru")
+        )) return true;
+        return false;
+      } catch (e) {
+        return false;
       }
-      finderPattern(0, 0);
-      finderPattern(m - 7, 0);
-      finderPattern(0, m - 7);
-
-      for (let y = 0; y < m; y++) for (let x = 0; x < m; x++) {
-        if ((x < 8 && y < 8) || (x >= m-8 && y < 8) || (x < 8 && y >= m-8)) continue;
-        if (rand() > 0.52) rects += `<rect x="${x*c}" y="${y*c}" width="${c}" height="${c}"/>`;
-      }
-
-      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#fff" rx="8"/>${rects}</svg>`;
     }
 
     function startSbpTimer() {
-      sbpTimeLeft = 900;
+      sbpTimeLeft = paymentTimeoutSeconds;
       updateTimerDisplay();
       sbpTimerInterval = setInterval(() => {
         sbpTimeLeft--;
         if (sbpTimeLeft <= 0) {
           clearInterval(sbpTimerInterval);
           sbpTimerInterval = null;
+          stopSbpPolling();
           closeSbpModal();
           showToast("Время ожидания оплаты истекло. Попробуйте снова.", "error");
           payButton.disabled = false;
@@ -1796,65 +2044,159 @@
       document.getElementById("sbp-timer-text").textContent = `${min}:${String(sec).padStart(2, "0")}`;
     }
 
-    function openSbpPayment(order) {
+    async function openSbpPayment(order) {
       currentPaymentOrder = order;
       document.getElementById("sbp-amount").textContent = formatPrice(order.total);
       document.getElementById("sbp-order-info").textContent = `Заказ №${order.public_order_number}`;
       document.getElementById("sbp-success-amount").textContent = formatPrice(order.total);
       document.getElementById("sbp-success-order").textContent = `Заказ №${order.public_order_number}`;
-      document.getElementById("sbp-qr-code").innerHTML = generateMockQR(order.order_id);
+
+      // Show modal with loading state
+      document.getElementById("sbp-qr-code").innerHTML = '<p style="color:#888;font-size:13px;">Создаём платёж...</p>';
       sbpQrScreen.style.display = "flex";
       sbpProcessingScreen.style.display = "none";
       sbpSuccessScreen.style.display = "none";
       sbpModal.classList.add("open");
       document.body.style.overflow = "hidden";
       startSbpTimer();
+
+      // Create real SBP payment
+      try {
+        const resp = await fetch(`/api/sbp/create-payment/${order.order_id}`, {
+          method: "POST",
+          headers: apiHeaders(),
+        });
+        if (!resp.ok) {
+          let errMsg = "Не удалось создать платёж.";
+          try { const errData = await resp.json(); errMsg = errData.detail || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+        const data = await resp.json();
+
+        if (data.status === "already_paid") {
+          onPaymentConfirmed(data);
+          return;
+        }
+
+        sbpDeeplink = data.deeplink || data.payment_url || "";
+
+        // Security: validate deeplink protocol before using
+        if (sbpDeeplink && !isValidSbpUrl(sbpDeeplink)) {
+          console.error("Invalid SBP deeplink rejected:", sbpDeeplink);
+          sbpDeeplink = "";
+        }
+
+        if (sbpDeeplink) {
+          // Show button to open bank app (mobile) or QR hint (desktop)
+          document.getElementById("sbp-qr-code").innerHTML =
+            '<p style="color:#555;font-size:13px;margin-bottom:8px;">Нажмите кнопку ниже,<br>чтобы оплатить в приложении банка</p>' +
+            '<p style="color:#aaa;font-size:11px;">Deeplink готов ✓</p>';
+        } else {
+          document.getElementById("sbp-qr-code").innerHTML =
+            '<p style="color:#c62828;font-size:13px;">Не удалось получить ссылку для оплаты.<br>Попробуйте снова.</p>';
+        }
+
+        // Start polling for payment status
+        startSbpPolling();
+
+      } catch (error) {
+        closeSbpModal();
+        showToast(error.message || "Ошибка создания платежа.", "error");
+        payButton.disabled = false;
+      }
+    }
+
+    function startSbpPolling() {
+      stopSbpPolling();
+      sbpPollingInterval = setInterval(async () => {
+        if (!currentPaymentOrder) return;
+        try {
+          const resp = await fetch(`/api/sbp/check-status/${currentPaymentOrder.order_id}`, {
+            headers: apiHeaders(),
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+
+          if (data.status === "paid") {
+            stopSbpPolling();
+            onPaymentConfirmed(data);
+          } else if (data.payment_status === "expired" || data.status === "cancelled") {
+            stopSbpPolling();
+            closeSbpModal();
+            showToast("Время на оплату истекло. Пожалуйста, оформите заказ заново.", "error");
+          }
+        } catch (e) {
+          console.warn("SBP polling error:", e);
+        }
+      }, 3000);
+    }
+
+    function stopSbpPolling() {
+      if (sbpPollingInterval) {
+        clearInterval(sbpPollingInterval);
+        sbpPollingInterval = null;
+      }
+    }
+
+    function onPaymentConfirmed(data) {
+      // Update order data if available
+      if (data.order_id) {
+        currentPaymentOrder = data;
+      }
+
+      sbpQrScreen.style.display = "none";
+      sbpProcessingScreen.style.display = "none";
+      sbpSuccessScreen.style.display = "flex";
+
+      if (sbpTimerInterval) {
+        clearInterval(sbpTimerInterval);
+        sbpTimerInterval = null;
+      }
+
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+
+      cart.clear();
+      saveCart();
+      updateCartBadge();
+      updateCardBadges();
+      payButton.disabled = false;
+    }
+
+    async function openBankApp() {
+      if (!sbpDeeplink || !isValidSbpUrl(sbpDeeplink)) {
+        showToast("Ссылка на оплату недоступна.", "error");
+        return;
+      }
+
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+
+      // Open SBP deeplink — triggers bank app selection on mobile
+      // В Telegram Mini App используем tg.openLink для надёжного открытия внешней ссылки
+      if (tg && tg.openLink) {
+        try {
+          tg.openLink(sbpDeeplink);
+        } catch (e) {
+          // Fallback: прямое открытие если tg.openLink не поддерживается
+          window.location.href = sbpDeeplink;
+        }
+      } else {
+        window.location.href = sbpDeeplink;
+      }
+
+      // Switch to processing screen after a short delay
+      setTimeout(() => {
+        sbpQrScreen.style.display = "none";
+        sbpProcessingScreen.style.display = "flex";
+      }, 1000);
     }
 
     function closeSbpModal() {
       sbpModal.classList.remove("open");
       document.body.style.overflow = "";
+      stopSbpPolling();
       if (sbpTimerInterval) {
         clearInterval(sbpTimerInterval);
         sbpTimerInterval = null;
-      }
-    }
-
-    async function simulatePayment() {
-      sbpQrScreen.style.display = "none";
-      sbpProcessingScreen.style.display = "flex";
-      clearInterval(sbpTimerInterval);
-      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
-
-      await new Promise(r => setTimeout(r, 2500));
-
-      try {
-        const resp = await fetch(`/api/orders/${currentPaymentOrder.order_id}/confirm-payment`, {
-          method: "POST",
-          headers: apiHeaders(),
-        });
-        if (!resp.ok) {
-          let errMsg = "Ошибка подтверждения оплаты.";
-          try { const errData = await resp.json(); errMsg = errData.detail || errMsg; } catch {}
-          console.error("confirm-payment error:", resp.status, errMsg);
-          throw new Error(errMsg);
-        }
-        const confirmed = await resp.json();
-        currentPaymentOrder = confirmed;
-
-        sbpProcessingScreen.style.display = "none";
-        sbpSuccessScreen.style.display = "flex";
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-
-        cart.clear();
-        saveCart();
-        updateCartBadge();
-        updateCardBadges();
-        payButton.disabled = false;
-      } catch (error) {
-        closeSbpModal();
-        showToast(error.message || "Ошибка оплаты.", "error");
-        payButton.disabled = false;
       }
     }
 
@@ -1871,7 +2213,7 @@
       }
     }
 
-    document.getElementById("sbp-open-bank").addEventListener("click", simulatePayment);
+    document.getElementById("sbp-open-bank").addEventListener("click", openBankApp);
     document.getElementById("sbp-close").addEventListener("click", () => {
       closeSbpModal();
       showToast("Оплата отменена.", "error");
@@ -1897,11 +2239,12 @@
         return;
       }
       payButton.disabled = true;
+      const comment = (document.getElementById("order-comment").value || "").trim();
       try {
         const createResponse = await fetch("/api/create_order", {
           method: "POST",
           headers: apiHeaders(),
-          body: JSON.stringify({ items })
+          body: JSON.stringify({ items, comment })
         });
         if (!createResponse.ok) {
           let errMsg = "Не удалось создать заказ.";
@@ -1910,6 +2253,7 @@
           throw new Error(errMsg);
         }
         const order = await createResponse.json();
+        document.getElementById("order-comment").value = "";
         closeCart();
         openSbpPayment(order);
       } catch (error) {
@@ -1960,6 +2304,220 @@
     });
     payButton.addEventListener("click", checkout);
 
+    // ---- Search ----
+    const searchInput = document.getElementById("search-input");
+    const searchClear = document.getElementById("search-clear");
+    let searchQuery = "";
+
+    function applySearch() {
+      const q = searchQuery.toLowerCase().trim();
+      document.querySelectorAll(".panel.section").forEach(section => {
+        const cards = section.querySelectorAll(".card");
+        let visibleCount = 0;
+        cards.forEach(card => {
+          const name = (card.querySelector("h3")?.textContent || "").toLowerCase();
+          const desc = (card.querySelector(".card-body p")?.textContent || "").toLowerCase();
+          const match = !q || name.includes(q) || desc.includes(q);
+          card.style.display = match ? "" : "none";
+          if (match) visibleCount++;
+        });
+        section.style.display = visibleCount > 0 ? "" : "none";
+      });
+    }
+
+    searchInput.addEventListener("input", () => {
+      searchQuery = searchInput.value;
+      searchClear.classList.toggle("visible", searchQuery.length > 0);
+      applySearch();
+    });
+    searchClear.addEventListener("click", () => {
+      searchInput.value = "";
+      searchQuery = "";
+      searchClear.classList.remove("visible");
+      applySearch();
+      searchInput.focus();
+    });
+
+    // ---- Order History ----
+    const historySection = document.getElementById("history-section");
+    const historyToggle = document.getElementById("history-toggle");
+    const historyList = document.getElementById("history-list");
+    const historyCountEl = document.getElementById("history-count");
+    let historyLoaded = false;
+
+    historyToggle.addEventListener("click", async () => {
+      const isOpen = historyList.classList.contains("open");
+      if (isOpen) {
+        historyList.classList.remove("open");
+        historyToggle.setAttribute("aria-expanded", "false");
+        return;
+      }
+      historyToggle.setAttribute("aria-expanded", "true");
+      if (!historyLoaded) {
+        historyList.innerHTML = '<div style="padding:16px;text-align:center;color:#7c6858;font-size:14px;">Загрузка...</div>';
+        historyList.classList.add("open");
+        try {
+          const resp = await fetch("/api/my-orders?limit=10", { headers: apiHeaders() });
+          if (!resp.ok) throw new Error();
+          const data = await resp.json();
+          if (!data.orders || data.orders.length === 0) {
+            historyList.innerHTML = '<div style="padding:16px;text-align:center;color:#7c6858;font-size:14px;">Заказов пока нет</div>';
+          } else {
+            historyList.innerHTML = data.orders.map(order => {
+              const dateStr = new Date(order.created_at).toLocaleDateString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+              const itemsStr = order.items.map(it => `${esc(it.name)} × ${it.quantity}`).join(", ");
+              return `<div class="history-order">
+                <div class="history-order-header">
+                  <strong>№${esc(String(order.public_order_number))}</strong>
+                  <span>${dateStr}</span>
+                </div>
+                <div class="history-items">${esc(itemsStr)}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="font-weight:700;color:#1c513d">${formatPrice(order.total)}</span>
+                  <button class="history-repeat-btn" type="button" data-repeat-items='${esc(JSON.stringify(order.items))}'>🔁 Повторить</button>
+                </div>
+              </div>`;
+            }).join("");
+            historyCountEl.textContent = `(${data.orders.length})`;
+          }
+          historyLoaded = true;
+        } catch (e) {
+          historyList.innerHTML = '<div style="padding:16px;text-align:center;color:#7c6858;font-size:14px;">Не удалось загрузить заказы</div>';
+        }
+      } else {
+        historyList.classList.add("open");
+      }
+    });
+
+    historyList.addEventListener("click", (e) => {
+      const btn = e.target.closest(".history-repeat-btn");
+      if (!btn) return;
+      try {
+        const items = JSON.parse(btn.dataset.repeatItems);
+        let added = 0;
+        items.forEach(it => {
+          const menuItem = findMenuItem(it.item_id);
+          if (menuItem && menuItem.is_available !== false) {
+            const current = cart.get(it.item_id) || 0;
+            const qty = Math.min(it.quantity, 50 - current);
+            if (qty > 0) { cart.set(it.item_id, current + qty); added += qty; }
+          }
+        });
+        if (added > 0) {
+          updateCartBadge();
+          saveCart();
+          updateCardBadges();
+          showToast(`Добавлено ${added} позиций из предыдущего заказа.`);
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        } else {
+          showToast("Позиции из этого заказа недоступны.", "error");
+        }
+      } catch (err) {
+        showToast("Не удалось повторить заказ.", "error");
+      }
+    });
+
+    // ---- Offline detection ----
+    const offlineBanner = document.getElementById("offline-banner");
+    function updateOnlineStatus() {
+      if (!navigator.onLine) {
+        offlineBanner.classList.add("visible");
+      } else {
+        offlineBanner.classList.remove("visible");
+      }
+    }
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
+    updateOnlineStatus();
+
+    // ---- Visibility change: pause/resume polling ----
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (scheduleCheckInterval) { clearInterval(scheduleCheckInterval); scheduleCheckInterval = null; }
+        stopSbpPolling();
+        if (sbpTimerInterval) { clearInterval(sbpTimerInterval); sbpTimerInterval = null; }
+      } else {
+        // Resume
+        if (categories.length) {
+          scheduleCheckInterval = setInterval(checkSchedule, 60000);
+          checkSchedule();
+        }
+        if (sbpModal.classList.contains("open") && currentPaymentOrder) {
+          startSbpPolling();
+          // Don't restart timer — time already passed
+        }
+      }
+    });
+
+    // ---- iOS modal scroll fix ----
+    function lockBodyScroll() { document.body.style.position = "fixed"; document.body.style.width = "100%"; document.body.style.overflow = "hidden"; }
+    function unlockBodyScroll() { document.body.style.position = ""; document.body.style.width = ""; document.body.style.overflow = ""; }
+
+    // ---- Focus trap for modals ----
+    function trapFocus(modal) {
+      const focusable = modal.querySelectorAll('button:not([disabled]), [href], input, textarea, select, [tabindex]:not([tabindex="-1"])');
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      function handler(e) {
+        if (e.key !== "Tab") return;
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+      modal._focusTrapHandler = handler;
+      modal.addEventListener("keydown", handler);
+      first.focus();
+    }
+    function releaseFocusTrap(modal) {
+      if (modal._focusTrapHandler) {
+        modal.removeEventListener("keydown", modal._focusTrapHandler);
+        delete modal._focusTrapHandler;
+      }
+    }
+
+    // Patch openCart/closeCart with focus trap + iOS fix
+    const _origOpenCart = openCart;
+    openCart = function() {
+      _origOpenCart();
+      lockBodyScroll();
+      trapFocus(cartModal);
+    };
+    const _origCloseCart = closeCart;
+    closeCart = function() {
+      releaseFocusTrap(cartModal);
+      _origCloseCart();
+      if (!sbpModal.classList.contains("open")) unlockBodyScroll();
+    };
+
+    // ---- Fetch app config (payment timeout) ----
+    async function fetchAppConfig() {
+      try {
+        const resp = await fetch("/api/app-config");
+        if (!resp.ok) return;
+        const cfg = await resp.json();
+        if (cfg.payment_timeout_seconds) paymentTimeoutSeconds = cfg.payment_timeout_seconds;
+      } catch (e) { /* ignore */ }
+    }
+
+    // ---- Skeleton loader ----
+    function showSkeleton() {
+      const count = window.innerWidth < 720 ? 4 : 6;
+      menuRoot.innerHTML = `<div class="skeleton-grid">${
+        Array.from({length: count}, () => `<div class="skeleton-card">
+          <div class="skeleton-img"></div>
+          <div class="skeleton-body">
+            <div class="skeleton-line" style="width:80%"></div>
+            <div class="skeleton-line" style="width:60%"></div>
+            <div class="skeleton-line" style="width:40%"></div>
+          </div>
+        </div>`).join("")
+      }</div>`;
+    }
+
+    // ---- Init ----
     if (tg) {
       tg.ready();
       tg.expand();
@@ -1969,11 +2527,15 @@
     loadCart();
     updateCartBadge();
 
-    const loaderMsg = document.getElementById("loader-msg");
-    loaderMsg.textContent = "Загружаем меню...";
+    // Show history section only if we have Telegram auth
+    if (tg && tg.initData) {
+      historySection.style.display = "";
+    }
 
-    fetchMenu().then(() => {
-      loaderMsg.remove();
+    showSkeleton();
+
+    Promise.all([fetchMenu(), fetchAppConfig()]).then(() => {
+      // skeleton replaced by renderMenu
     }).catch(() => {
       menuRoot.innerHTML = `<div class="error-box">Не удалось загрузить меню. Попробуйте перезагрузить страницу.</div>`;
     });
