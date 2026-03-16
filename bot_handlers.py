@@ -92,6 +92,8 @@ async def configure_bot_entrypoints() -> None:
                 BotCommand(command="admin", description="Назначить этот чат кассой"),
                 BotCommand(command="stop", description="Отключить блюдо (стоп-лист)"),
                 BotCommand(command="stoplist", description="Текущий стоп-лист"),
+                BotCommand(command="pause", description="Пауза приёма заказов"),
+                BotCommand(command="refund", description="Возврат по заказу"),
                 BotCommand(command="stats", description="Статистика за сегодня"),
             ]
         )
@@ -199,6 +201,42 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             )
             await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
             await callback.answer("🟢 Готов!")
+
+            # Phase 2 fiscal receipt: full settlement (54-FZ two-phase)
+            try:
+                from payments.fiscal import fiscalize_order
+                fiscal_items = [
+                    {
+                        "name_snapshot": item.name_snapshot,
+                        "price_snapshot": item.price_snapshot,
+                        "quantity": item.quantity,
+                    }
+                    for item in order.items
+                ]
+                fiscal_result = await fiscalize_order(
+                    order_id=order.id,
+                    order_number=order.public_order_number,
+                    items=fiscal_items,
+                    total_amount=order.total_amount,
+                    payment_method="full_payment",
+                )
+                if fiscal_result.success and fiscal_result.uuid:
+                    with database.db_session() as fs:
+                        o = fs.get(Order, order.id)
+                        if o:
+                            o.fiscal_uuid = fiscal_result.uuid
+                            fs.commit()
+                    logging.info(
+                        "Phase 2 fiscal receipt for order %d, uuid=%s",
+                        order.id, fiscal_result.uuid,
+                    )
+                else:
+                    logging.error(
+                        "Phase 2 fiscal failed for order %d: %s",
+                        order.id, fiscal_result.error,
+                    )
+            except Exception:
+                logging.exception("Phase 2 fiscalization error for order %d", order.id)
             return
 
     await callback.answer("Неизвестное действие.")
@@ -552,3 +590,133 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                     await callback.answer("Блюдо отключено без таймера")
             else:
                 await callback.answer("Блюдо не найдено.")
+
+
+# ── Pause ordering ───────────────────────────────────────────────────────
+
+@bot_setup.router.message(Command("pause"))
+async def handle_pause(message: Message) -> None:
+    """Пауза приёма заказов: /pause 30 — пауза на 30 мин, /pause — снять."""
+    chat_id = message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await message.answer("Доступ запрещён.")
+        return
+
+    text_msg = (message.text or "").strip()
+    parts = text_msg.split(maxsplit=1)
+
+    if len(parts) < 2 or not parts[1].strip():
+        with database.db_session() as session:
+            database.save_setting(session, "ordering_paused_until", "")
+        await message.answer("✅ Приём заказов возобновлён.")
+        return
+
+    try:
+        minutes = int(parts[1].strip())
+    except ValueError:
+        await message.answer("Укажите число минут: <code>/pause 30</code>")
+        return
+
+    if minutes < 1 or minutes > 480:
+        await message.answer("Укажите от 1 до 480 минут.")
+        return
+
+    pause_until = database.now_utc() + timedelta(minutes=minutes)
+    with database.db_session() as session:
+        database.save_setting(session, "ordering_paused_until", pause_until.isoformat())
+    await message.answer(
+        f"⏸ Приём заказов приостановлен на {minutes} мин.\n"
+        f"Для возобновления: /pause"
+    )
+
+
+# ── Refund ────────────────────────────────────────────────────────────────
+
+@bot_setup.router.message(Command("refund"))
+async def handle_refund(message: Message) -> None:
+    """Возврат: /refund <номер_заказа>"""
+    chat_id = message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await message.answer("Доступ запрещён.")
+        return
+
+    text_msg = (message.text or "").strip()
+    parts = text_msg.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Укажите номер заказа: <code>/refund 1001</code>")
+        return
+
+    try:
+        order_number = int(parts[1].strip())
+    except ValueError:
+        await message.answer("Номер заказа должен быть числом.")
+        return
+
+    with database.db_session() as session:
+        order = session.query(Order).filter(
+            Order.public_order_number == order_number
+        ).first()
+
+        if not order:
+            await message.answer(f"Заказ №{order_number} не найден.")
+            return
+
+        if order.payment_status != "paid":
+            await message.answer(
+                f"Заказ №{order_number} нельзя вернуть "
+                f"(статус оплаты: {order.payment_status})."
+            )
+            return
+
+        order.payment_status = "refunded"
+        order.status = "cancelled"
+        order.updated_at = database.now_utc()
+        session.commit()
+
+        await notify_customer(
+            order,
+            f"💸 Возврат средств по заказу №{order.public_order_number}. "
+            f"Сумма {database.rub(order.total_amount)} будет возвращена.",
+        )
+
+        fiscal_refund = FiscalQueue(
+            order_id=order.id,
+            operation="sell_refund",
+            status="pending",
+        )
+        session.add(fiscal_refund)
+        session.commit()
+
+    await message.answer(
+        f"✅ Возврат по заказу №{order_number} оформлен.\n"
+        f"Сумма: {database.rub(order.total_amount)}\n"
+        f"Фискальный чек возврата поставлен в очередь."
+    )
+
+
+# ── Prep time callback ───────────────────────────────────────────────────
+
+@bot_setup.router.callback_query(F.data.startswith("preptime:"))
+async def handle_prep_time(callback: CallbackQuery) -> None:
+    """Кассир уточняет время готовности."""
+    if callback.data is None or callback.message is None:
+        await callback.answer("Ошибка.")
+        return
+
+    try:
+        _, raw_order_id, raw_minutes = callback.data.split(":")
+        order_id = int(raw_order_id)
+        minutes = int(raw_minutes)
+    except (ValueError, TypeError):
+        await callback.answer("Некорректные данные.")
+        return
+
+    with database.db_session() as session:
+        order = database.fetch_order(session, order_id)
+        await notify_customer(
+            order,
+            f"⏰ Заказ №{order.public_order_number} — "
+            f"примерное время готовности: ~{minutes} мин.",
+        )
+
+    await callback.answer(f"Клиент уведомлён: ~{minutes} мин")

@@ -1510,6 +1510,9 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) {
+      try { tg.enableClosingConfirmation(); } catch(e) { /* older clients */ }
+    }
     const menuRoot = document.getElementById("menu-root");
     const categoryRail = document.getElementById("category-rail");
     const cartButton = document.getElementById("cart-button");
@@ -2253,7 +2256,7 @@
       closeSbpModal();
       if (currentPaymentOrder) {
         showOrderSummary(currentPaymentOrder);
-        showToast(`Заказ №${currentPaymentOrder.public_order_number} оплачен.`);
+        showToast(`Заказ №${currentPaymentOrder.public_order_number} оплачен. ⏰ ~20 мин`);
         showReviewCard(currentPaymentOrder);
       }
       // Show closed overlay if cafe closed during payment
@@ -2643,6 +2646,16 @@
         });
       }, { rootMargin: "-40% 0px -55% 0px" });
       sections.forEach(s => obs.observe(s));
+    }
+
+    // ---- iOS keyboard fix: scroll focused input into view ----
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => {
+        const el = document.activeElement;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+          setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 100);
+        }
+      });
     }
 
     // ---- Client error reporting ----

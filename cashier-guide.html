@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Инструкция кассира</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5; color: #333; line-height: 1.6;
+    max-width: 700px; margin: 0 auto; padding: 16px;
+  }
+  h1 { font-size: 1.5em; margin-bottom: 8px; text-align: center; }
+  .subtitle { text-align: center; color: #888; margin-bottom: 24px; font-size: 0.9em; }
+  section { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  h2 { font-size: 1.1em; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  h3 { font-size: 0.95em; margin: 12px 0 6px; color: #555; }
+  code { background: #e8f0fe; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; }
+  .cmd { display: block; margin: 6px 0; padding: 8px 12px; background: #f0f4f8; border-left: 3px solid #4a90d9; border-radius: 4px; font-family: monospace; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  .flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .flow .step { background: #e3f2fd; padding: 4px 10px; border-radius: 16px; font-size: 0.85em; white-space: nowrap; }
+  .flow .arrow { color: #999; }
+  .warning { background: #fff3e0; border-left: 3px solid #ff9800; padding: 8px 12px; border-radius: 4px; margin: 8px 0; font-size: 0.9em; }
+  .tip { background: #e8f5e9; border-left: 3px solid #4caf50; padding: 8px 12px; border-radius: 4px; margin: 8px 0; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Инструкция кассира</h1>
+<p class="subtitle">Telegram-бот для управления заказами</p>
+
+<section>
+  <h2>📋 Работа с заказами</h2>
+  <p>Когда клиент оплачивает заказ, бот отправляет сообщение с деталями в чат кассы.</p>
+
+  <h3>Жизненный цикл заказа:</h3>
+  <div class="flow">
+    <span class="step">💳 Оплачен</span>
+    <span class="arrow">&rarr;</span>
+    <span class="step">🟡 Готовится</span>
+    <span class="arrow">&rarr;</span>
+    <span class="step">🟢 Готов</span>
+  </div>
+
+  <h3>Кнопки управления:</h3>
+  <ul>
+    <li><b>🟡 Готовится</b> &mdash; заказ передан на кухню</li>
+    <li><b>🟢 Готов</b> &mdash; заказ готов к выдаче, клиент получит уведомление</li>
+    <li><b>⏰ 15м / 20м / 30м / 40м</b> &mdash; сообщить клиенту примерное время готовности</li>
+  </ul>
+
+  <div class="tip">Нажимайте кнопку времени сразу после принятия заказа &mdash; клиент будет знать когда подходить.</div>
+</section>
+
+<section>
+  <h2>🚫 Стоп-лист</h2>
+  <p>Управляйте доступностью блюд в меню.</p>
+
+  <h3>Отключить блюдо:</h3>
+  <div class="cmd">/stop Плов</div>
+  <p>Бот спросит, когда блюдо вернётся (30 мин, 1 час, 2 часа, или без таймера).</p>
+
+  <h3>Отключить всю категорию:</h3>
+  <div class="cmd">/stop</div>
+  <p>Без аргумента &mdash; покажет кнопки для отключения целых категорий.</p>
+
+  <h3>Посмотреть стоп-лист:</h3>
+  <div class="cmd">/stoplist</div>
+  <p>Показывает все отключённые блюда с кнопками для возврата.</p>
+
+  <div class="warning">Если клиент оплатил заказ с позицией из стоп-листа, заказ автоматически отменяется.</div>
+</section>
+
+<section>
+  <h2>💸 Возврат средств</h2>
+  <div class="cmd">/refund 4648</div>
+  <p>Где <code>4648</code> &mdash; номер заказа. Возврат возможен только для оплаченных заказов.</p>
+  <ul>
+    <li>Клиент получит уведомление о возврате</li>
+    <li>Автоматически создаётся чек возврата (54-ФЗ)</li>
+    <li>Заказ переходит в статус &laquo;отменён&raquo;</li>
+  </ul>
+</section>
+
+<section>
+  <h2>⏸ Пауза приёма заказов</h2>
+  <p>Временно приостановить приём новых заказов (например, при большой загрузке кухни).</p>
+
+  <h3>Поставить на паузу:</h3>
+  <div class="cmd">/pause 30</div>
+  <p>Пауза на 30 минут. Допустимо от 1 до 480 минут.</p>
+
+  <h3>Снять паузу:</h3>
+  <div class="cmd">/pause</div>
+  <p>Без аргумента &mdash; возобновляет приём заказов.</p>
+
+  <div class="tip">Пауза снимается автоматически по истечении указанного времени.</div>
+</section>
+
+<section>
+  <h2>📊 Статистика</h2>
+  <div class="cmd">/stats</div>
+  <p>Статистика за сегодня: количество заказов, выручка, средний чек, топ-5 позиций.</p>
+
+  <h3>За период:</h3>
+  <div class="cmd">/stats неделя</div>
+  <div class="cmd">/stats месяц</div>
+</section>
+
+<section>
+  <h2>⚙ Назначение чата кассой</h2>
+  <div class="cmd">/admin</div>
+  <p>Выполните эту команду один раз в чате, куда должны приходить заказы. Обычно это личный чат с ботом или группа кассиров.</p>
+</section>
+
+</body>
+</html>

@@ -22,6 +22,7 @@ from config import (
     APP_BASE_URL,
     BASE_DIR,
     BOT_TOKEN,
+    DEFAULT_PREP_TIME_MINUTES,
     DEV_MODE,
     MAX_ITEMS_PER_ORDER,
     MAX_ORDER_TOTAL_RUB,
@@ -135,6 +136,12 @@ async def serve_index() -> Response:
             "Expires": "0",
         },
     )
+
+
+@router.get("/cashier-guide")
+async def cashier_guide() -> FileResponse:
+    """Инструкция для кассира."""
+    return FileResponse(BASE_DIR / "cashier-guide.html", media_type="text/html")
 
 
 @router.get("/healthz")
@@ -303,6 +310,12 @@ async def create_order(payload: CreateOrderRequest, request: Request) -> dict[st
             status_code=400,
             detail=f"Кафе сейчас закрыто. Часы работы: {schedule['opens_at']}–{schedule['closes_at']} (Иркутск). Последний заказ в {schedule['last_order_at']}.",
         )
+
+    # Check if ordering is paused by admin
+    with db_session() as _pause_session:
+        pause_reason = database.is_ordering_paused(_pause_session)
+        if pause_reason:
+            raise HTTPException(status_code=400, detail=pause_reason)
 
     requested_quantities: dict[int, int] = {}
     for item in payload.items:
@@ -678,12 +691,13 @@ async def _process_paid_order(order_id: int) -> None:
             order_number=order_number,
             items=fiscal_items,
             total_amount=total_amount,
+            payment_method="prepayment",  # Phase 1: prepayment receipt (54-FZ)
         )
         if fiscal_result.success and fiscal_result.uuid:
             with db_session() as session:
                 order = session.get(Order, order_id)
                 if order:
-                    order.fiscal_uuid = fiscal_result.uuid
+                    order.fiscal_prepayment_uuid = fiscal_result.uuid
                     session.commit()
             logging.info("Фискализация: чек создан для заказа %d, uuid=%s",
                          order_id, fiscal_result.uuid)
@@ -742,7 +756,8 @@ async def _process_paid_order(order_id: int) -> None:
                 text=(
                     f"✅ Заказ №{order_number} оплачен!\n\n"
                     f"Сумма: {rub(total_amount)}\n"
-                    f"Статус: <b>Готовится</b>\n\n"
+                    f"Статус: <b>Готовится</b>\n"
+                    f"⏰ Примерное время: ~{DEFAULT_PREP_TIME_MINUTES} мин\n\n"
                     "Мы сообщим, когда заказ будет готов к выдаче."
                 ),
             )

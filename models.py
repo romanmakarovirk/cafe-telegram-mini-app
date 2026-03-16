@@ -46,6 +46,7 @@ class Order(Base):
     cashier_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     gateway_order_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     fiscal_uuid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    fiscal_prepayment_uuid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     kitchen_printed: Mapped[bool] = mapped_column(Boolean, default=False)
     accounting_synced: Mapped[bool] = mapped_column(Boolean, default=False)
     accounting_doc_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

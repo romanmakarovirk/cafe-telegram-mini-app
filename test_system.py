@@ -668,7 +668,7 @@ class TestProcessPaidOrder:
             order = session.get(m.Order, order_id)
             assert order.payment_status == "paid"
             assert order.status == "preparing"
-            assert order.fiscal_uuid == "fiscal-uuid-123"
+            assert order.fiscal_prepayment_uuid == "fiscal-uuid-123"
             # 1С disabled, так что accounting_synced останется False
             # (mock подменяет импорт внутри _process_paid_order,
             #  но функция использует from ... import, поэтому нужен patch модуля)

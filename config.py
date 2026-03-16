@@ -59,6 +59,7 @@ MAX_ITEMS_PER_ORDER = int(os.getenv("MAX_ITEMS_PER_ORDER", "100"))
 MAX_ORDER_TOTAL_RUB = int(os.getenv("MAX_ORDER_TOTAL_RUB", "50000"))
 ORDER_PAYMENT_TIMEOUT_MINUTES = int(os.getenv("ORDER_PAYMENT_TIMEOUT_MINUTES", "15"))
 KITCHEN_API_KEY = os.getenv("KITCHEN_API_KEY", "").strip()
+DEFAULT_PREP_TIME_MINUTES = int(os.getenv("DEFAULT_PREP_TIME_MINUTES", "20"))
 
 # ── Named Constants (вместо magic numbers) ────────────────────────────────
 AUTH_DATE_MAX_AGE_SECONDS = 86400          # Срок жизни Telegram initData (24ч)

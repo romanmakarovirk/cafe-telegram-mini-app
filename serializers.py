@@ -116,7 +116,13 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
                         text="🟢 Готов",
                         callback_data=f"order:ready:{order_id}",
                     ),
-                ]
+                ],
+                [
+                    InlineKeyboardButton(text="⏰ 15м", callback_data=f"preptime:{order_id}:15"),
+                    InlineKeyboardButton(text="⏰ 20м", callback_data=f"preptime:{order_id}:20"),
+                    InlineKeyboardButton(text="⏰ 30м", callback_data=f"preptime:{order_id}:30"),
+                    InlineKeyboardButton(text="⏰ 40м", callback_data=f"preptime:{order_id}:40"),
+                ],
             ]
         )
     if status == "preparing":

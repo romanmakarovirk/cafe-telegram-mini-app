@@ -79,6 +79,24 @@ def save_setting(session: Session, key: str, value: str) -> None:
     session.commit()
 
 
+def is_ordering_paused(session: Session) -> str | None:
+    """Return pause reason string if ordering is paused, else None."""
+    raw = load_setting(session, "ordering_paused_until")
+    if not raw:
+        return None
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        pause_until = _dt.fromisoformat(raw)
+        if pause_until > _dt.now(_tz.utc):
+            remaining = int((pause_until - _dt.now(_tz.utc)).total_seconds() / 60) + 1
+            return f"Приём заказов приостановлен (~{remaining} мин)"
+        # Pause expired — clean up
+        save_setting(session, "ordering_paused_until", "")
+        return None
+    except (ValueError, TypeError):
+        return None
+
+
 def seed_menu_items(session: Session) -> None:
     for item in MENU_SEED:
         existing = session.get(MenuItem, item["id"])
@@ -131,6 +149,9 @@ def _migrate_columns() -> None:
                 if "customer_comment" not in existing:
                     conn.execute(text("ALTER TABLE orders ADD COLUMN customer_comment VARCHAR(500)"))
                     logging.info("Migration: added orders.customer_comment column")
+                if "fiscal_prepayment_uuid" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN fiscal_prepayment_uuid VARCHAR(100)"))
+                    logging.info("Migration: added orders.fiscal_prepayment_uuid column")
     except Exception:
         logging.exception("Column migration failed (non-critical)")
 

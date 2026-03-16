@@ -515,6 +515,7 @@ async def fiscalize_order(
     total_amount: int,  # в рублях (целое число)
     client_email: str = "",
     client_phone: str = "",
+    payment_method: str = "full_payment",
 ) -> FiscalResult:
     """
     Фискализировать заказ (создать чек продажи).
@@ -526,6 +527,7 @@ async def fiscalize_order(
         total_amount: Сумма в рублях (целое число, как в БД)
         client_email: Email для чека
         client_phone: Телефон для чека
+        payment_method: "full_payment" (полный расчёт) or "prepayment" (предоплата 100%)
 
     Returns:
         FiscalResult
@@ -536,6 +538,7 @@ async def fiscalize_order(
             "name": item["name_snapshot"],
             "price": float(item["price_snapshot"]),
             "quantity": item["quantity"],
+            "payment_method": payment_method,
         }
         for item in items
     ]
