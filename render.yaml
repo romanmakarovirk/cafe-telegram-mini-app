@@ -10,15 +10,64 @@ services:
     plan: free
     healthCheckPath: /healthz
     envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: ADMIN_CHAT_ID
-        sync: false
+      # ── Auto-injected by Render ──
       - key: DATABASE_URL
         fromDatabase:
           name: cafe-db
           property: connectionString
+
+      # ── Public config (safe to store in YAML) ──
       - key: APP_BASE_URL
         value: https://cafe-telegram-mini-app.onrender.com
       - key: WEBAPP_URL
         value: https://cafe-telegram-mini-app.onrender.com
+      - key: DEV_MODE
+        value: "false"
+
+      # ── Secrets (MUST set in Render Dashboard, never in code) ──
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: ALLOWED_ADMIN_IDS
+        sync: false
+      - key: KITCHEN_API_KEY
+        sync: false
+
+      # ── SBP Sberbank (payment) ──
+      - key: SBP_USERNAME
+        sync: false
+      - key: SBP_PASSWORD
+        sync: false
+      - key: SBP_TOKEN
+        sync: false
+      - key: SBP_CALLBACK_SECRET
+        sync: false
+      - key: SBP_TEST_MODE
+        value: "true"
+
+      # ── ATOL Online (fiscal 54-FZ) ──
+      - key: ATOL_LOGIN
+        sync: false
+      - key: ATOL_PASSWORD
+        sync: false
+      - key: ATOL_GROUP_CODE
+        sync: false
+      - key: ATOL_INN
+        sync: false
+      - key: ATOL_COMPANY_EMAIL
+        sync: false
+      - key: ATOL_PAYMENT_ADDRESS
+        sync: false
+      - key: ATOL_TEST_MODE
+        value: "true"
+
+      # ── 1C:Fresh OData (accounting) ──
+      - key: FRESH_BASE_URL
+        sync: false
+      - key: FRESH_USERNAME
+        sync: false
+      - key: FRESH_PASSWORD
+        sync: false
+      - key: FRESH_ENABLED
+        value: "false"

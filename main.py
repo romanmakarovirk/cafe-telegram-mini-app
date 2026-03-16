@@ -42,7 +42,24 @@ except ImportError:  # pragma: no cover
     load_dotenv = None
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ── Structured Logging ────────────────────────────────────────────────────
+def _setup_logging() -> None:
+    """JSON-логирование для прода, текстовое для локальной разработки."""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    try:
+        from pythonjsonlogger.json import JsonFormatter
+        formatter = JsonFormatter(
+            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+            rename_fields={"asctime": "timestamp", "levelname": "level"},
+        )
+    except ImportError:
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    handler.setFormatter(formatter)
+    root.handlers = [handler]
+
+_setup_logging()
 
 BASE_DIR = Path(__file__).resolve().parent
 if load_dotenv is not None:
@@ -71,6 +88,54 @@ if INITIAL_ADMIN_CHAT_ID:
 MAX_ITEMS_PER_ORDER = int(os.getenv("MAX_ITEMS_PER_ORDER", "100"))
 MAX_ORDER_TOTAL_RUB = int(os.getenv("MAX_ORDER_TOTAL_RUB", "50000"))
 ORDER_PAYMENT_TIMEOUT_MINUTES = int(os.getenv("ORDER_PAYMENT_TIMEOUT_MINUTES", "15"))
+KITCHEN_API_KEY = os.getenv("KITCHEN_API_KEY", "").strip()
+
+# ── Named Constants (вместо magic numbers) ────────────────────────────────
+AUTH_DATE_MAX_AGE_SECONDS = 86400          # Срок жизни Telegram initData (24ч)
+RATE_LIMIT_ORDERS = 10                     # Заказов в минуту на пользователя
+RATE_LIMIT_REVIEWS = 5                     # Отзывов в минуту
+RATE_LIMIT_GENERAL = 60                    # Общих запросов в минуту
+RATE_LIMIT_CALLBACK = 30                   # SBP callback в минуту на IP
+RATE_LIMIT_SBP_CHECK = 20                  # Проверок статуса оплаты в минуту
+FISCAL_RETRY_BATCH_SIZE = 5                # Записей за цикл fiscal retry worker
+FISCAL_INITIAL_DELAY_SECONDS = 120         # Задержка старта fiscal worker
+KEEPALIVE_INTERVAL_SECONDS = 14 * 60       # Пинг для Render (14 мин)
+KEEPALIVE_STARTUP_DELAY_SECONDS = 60       # Задержка старта keep-alive
+
+
+def validate_production_config() -> None:
+    """Проверка обязательных секретов при старте.
+
+    DEV_MODE=false → missing secrets = SystemExit (не запускаем без ключей).
+    DEV_MODE=true  → missing secrets = WARNING (разработка без внешних API).
+    """
+    required_in_prod = {
+        "BOT_TOKEN": BOT_TOKEN,
+        "KITCHEN_API_KEY": KITCHEN_API_KEY,
+    }
+    # SBP_CALLBACK_SECRET проверяем отдельно — нужен только если SBP настроен
+    sbp_configured = bool(os.getenv("SBP_USERNAME") or os.getenv("SBP_TOKEN"))
+    if sbp_configured:
+        required_in_prod["SBP_CALLBACK_SECRET"] = os.getenv("SBP_CALLBACK_SECRET", "")
+
+    # ATOL_INN — нужен только если АТОЛ настроен
+    atol_configured = bool(os.getenv("ATOL_LOGIN"))
+    if atol_configured:
+        required_in_prod["ATOL_INN"] = os.getenv("ATOL_INN", "")
+
+    missing = [name for name, val in required_in_prod.items() if not val]
+
+    if not ALLOWED_ADMIN_IDS:
+        missing.append("ALLOWED_ADMIN_IDS")
+
+    if missing:
+        msg = f"Missing required config: {', '.join(missing)}"
+        if not DEV_MODE:
+            logging.critical("🚫 PRODUCTION STARTUP BLOCKED: %s", msg)
+            logging.critical("Set these in Render Dashboard → Environment Variables")
+            raise SystemExit(1)
+        else:
+            logging.warning("⚠️  DEV MODE: %s (OK for development)", msg)
 
 
 def normalize_database_url(raw_url: str) -> str:
@@ -632,7 +697,7 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> tuple[dict | No
     if auth_date:
         try:
             age = time_module.time() - int(auth_date)
-            if age > 86400:
+            if age > AUTH_DATE_MAX_AGE_SECONDS:
                 return None, f"auth_date_expired(age={int(age)}s)"
         except (ValueError, TypeError):
             return None, "auth_date_invalid"
@@ -764,15 +829,16 @@ class SimpleRateLimiter:
         return True
 
 
-order_limiter = SimpleRateLimiter(max_requests=10, window=60)    # 10 orders/min per user
-review_limiter = SimpleRateLimiter(max_requests=5, window=60)    # 5 reviews/min per user
-general_limiter = SimpleRateLimiter(max_requests=60, window=60)  # 60 req/min per IP
-callback_limiter = SimpleRateLimiter(max_requests=30, window=60)  # 30 callbacks/min per IP
-sbp_check_limiter = SimpleRateLimiter(max_requests=20, window=60)  # 20 status checks/min per user
+order_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_ORDERS, window=60)
+review_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_REVIEWS, window=60)
+general_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_GENERAL, window=60)
+callback_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_CALLBACK, window=60)
+sbp_check_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_SBP_CHECK, window=60)
 
 
 def verify_kitchen_api_key(request: Request) -> None:
     """Verify X-Kitchen-Key header. Fail-closed: rejects if key not configured."""
+    # Читаем из env каждый раз — позволяет менять ключ без рестарта
     kitchen_key = os.getenv("KITCHEN_API_KEY", "").strip()
     if not kitchen_key:
         raise HTTPException(
@@ -1606,9 +1672,9 @@ async def _keep_alive_ping():
     """Self-ping to prevent Render free tier from sleeping (every 14 min)."""
     import aiohttp
 
-    await asyncio.sleep(60)  # wait for full startup
+    await asyncio.sleep(KEEPALIVE_STARTUP_DELAY_SECONDS)
     url = f"{APP_BASE_URL}/healthz"
-    logging.info("Keep-alive started: pinging %s every 14 min", url)
+    logging.info("Keep-alive started: pinging %s every %d sec", url, KEEPALIVE_INTERVAL_SECONDS)
     while True:
         try:
             async with aiohttp.ClientSession() as s:
@@ -1616,7 +1682,7 @@ async def _keep_alive_ping():
                     logging.info("Keep-alive ping: %s", r.status)
         except Exception as exc:
             logging.warning("Keep-alive ping failed: %s", exc)
-        await asyncio.sleep(14 * 60)
+        await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
@@ -1625,23 +1691,8 @@ async def lifespan(_: FastAPI):
 
     initialize_database()
 
-    # ── Security startup warnings ─────────────────────────────────────────
-    if not os.getenv("KITCHEN_API_KEY", "").strip():
-        logging.warning(
-            "⚠️  KITCHEN_API_KEY not set. Kitchen and admin API endpoints will reject all requests."
-        )
-    if not ALLOWED_ADMIN_IDS:
-        logging.warning(
-            "⚠️  ALLOWED_ADMIN_IDS not set. ANY Telegram user can become admin via /admin."
-        )
-    if not BOT_TOKEN and DEV_MODE:
-        logging.critical(
-            "⚠️  BOT_TOKEN is empty and DEV_MODE=true. dev_user_id auth bypass is ACTIVE."
-        )
-    if not os.getenv("SBP_CALLBACK_SECRET", "").strip():
-        logging.warning(
-            "⚠️  SBP_CALLBACK_SECRET not set. SBP payment callbacks will be rejected."
-        )
+    # ── Валидация обязательных секретов ────────────────────────────────────
+    validate_production_config()
 
     # Фоновые задачи
     stoplist_task = asyncio.create_task(_stoplist_auto_enable_worker())
@@ -1759,8 +1810,14 @@ async def serve_index() -> Response:
 
 
 @app.get("/healthz")
-async def healthcheck() -> Response:
-    """Расширенная проверка здоровья: БД, бот, АТОЛ, 1С."""
+async def healthz_liveness() -> dict[str, str]:
+    """Liveness probe — лёгкий, без обращений к БД. Для Render / k8s."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz_readiness() -> Response:
+    """Readiness probe — полная диагностика: БД, бот, АТОЛ, 1С, SBP."""
     checks: dict[str, Any] = {}
     overall = True
     backend = "postgres" if "postgresql+psycopg" in SQLALCHEMY_DATABASE_URL else "sqlite"
@@ -1770,7 +1827,7 @@ async def healthcheck() -> Response:
         with db_session() as session:
             session.execute(select(func.count(MenuItem.id)))
         checks["database"] = {"status": "ok", "backend": backend}
-    except Exception as e:
+    except Exception:
         checks["database"] = {"status": "error", "backend": backend}
         overall = False
 
@@ -1778,27 +1835,27 @@ async def healthcheck() -> Response:
     checks["telegram_bot"] = {"status": "ok" if bot else "not_configured"}
 
     # 3. ATOL (fiscalization)
-    atol_configured = bool(
-        os.getenv("ATOL_LOGIN", "").strip()
-        and os.getenv("ATOL_PASSWORD", "").strip()
-        and os.getenv("ATOL_GROUP_CODE", "").strip()
-    )
+    atol_configured = bool(os.getenv("ATOL_LOGIN") and os.getenv("ATOL_GROUP_CODE"))
     checks["atol"] = {"status": "configured" if atol_configured else "not_configured"}
 
     # 4. 1C:Fresh
-    odata_configured = bool(os.getenv("ODATA_BASE_URL", "").strip())
-    checks["accounting_1c"] = {"status": "configured" if odata_configured else "not_configured"}
+    fresh_configured = bool(os.getenv("FRESH_BASE_URL") and os.getenv("FRESH_ENABLED", "").lower() in ("true", "1"))
+    checks["accounting_1c"] = {"status": "configured" if fresh_configured else "not_configured"}
 
     # 5. SBP payments
-    sbp_configured = bool(
-        os.getenv("SBP_MEMBER_ID", "").strip()
-        and os.getenv("SBP_TERMINAL_ID", "").strip()
-    )
+    sbp_configured = bool(os.getenv("SBP_USERNAME") or os.getenv("SBP_TOKEN"))
     checks["sbp_payments"] = {"status": "configured" if sbp_configured else "not_configured"}
+
+    # 6. Secrets health
+    checks["secrets"] = {
+        "bot_token": "set" if BOT_TOKEN else "missing",
+        "kitchen_key": "set" if KITCHEN_API_KEY else "missing",
+        "admin_ids": "set" if ALLOWED_ADMIN_IDS else "missing",
+    }
 
     status_code = 200 if overall else 503
     return JSONResponse(
-        {"status": "ok" if overall else "degraded", "checks": checks},
+        {"status": "ok" if overall else "degraded", "checks": checks, "dev_mode": DEV_MODE},
         status_code=status_code,
     )
 
@@ -2606,6 +2663,72 @@ async def accounting_retry(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
 
 
 # ---------------------------------------------------------------------------
+#  Fiscal Queue Admin: просмотр и ручной retry
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/fiscal-queue")
+async def get_fiscal_queue(
+    request: Request,
+    status_filter: str = Query(default="all", pattern="^(all|pending|failed|done|processing)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Просмотр очереди фискализации. Только для администраторов."""
+    verify_kitchen_api_key(request)
+
+    with db_session() as session:
+        query = select(FiscalQueue).order_by(FiscalQueue.id.desc())
+        if status_filter != "all":
+            query = query.where(FiscalQueue.status == status_filter)
+        entries = session.scalars(query.limit(limit)).all()
+
+        return {
+            "count": len(entries),
+            "entries": [
+                {
+                    "id": fq.id,
+                    "order_id": fq.order_id,
+                    "order_number": fq.order_number,
+                    "operation": fq.operation,
+                    "status": fq.status,
+                    "attempts": fq.attempts,
+                    "max_attempts": fq.max_attempts,
+                    "last_error": fq.last_error,
+                    "fiscal_uuid": fq.fiscal_uuid,
+                    "created_at": fq.created_at.isoformat() if fq.created_at else None,
+                    "next_retry_at": fq.next_retry_at.isoformat() if fq.next_retry_at else None,
+                    "completed_at": fq.completed_at.isoformat() if fq.completed_at else None,
+                }
+                for fq in entries
+            ],
+        }
+
+
+@app.post("/api/admin/fiscal-queue/{entry_id}/retry")
+async def retry_fiscal_entry(
+    entry_id: Annotated[int, FastPath(gt=0, le=2_147_483_647)],
+    request: Request,
+) -> dict[str, str]:
+    """Сбросить failed запись в pending для повторной попытки фискализации."""
+    verify_kitchen_api_key(request)
+
+    with db_session() as session:
+        fq = session.get(FiscalQueue, entry_id)
+        if fq is None:
+            raise HTTPException(status_code=404, detail="Fiscal queue entry not found.")
+        if fq.status not in ("failed", "pending"):
+            raise HTTPException(status_code=400, detail=f"Cannot retry entry with status '{fq.status}'.")
+
+        fq.status = "pending"
+        fq.attempts = 0
+        fq.next_retry_at = now_utc()
+        fq.last_error = None
+        session.commit()
+        logging.info("Fiscal queue entry %d reset to pending by admin", entry_id)
+
+    return {"status": "ok", "message": f"Entry {entry_id} reset to pending."}
+
+
+# ---------------------------------------------------------------------------
 #  Стоп-лист: управление доступностью блюд
 # ---------------------------------------------------------------------------
 
@@ -2761,7 +2884,7 @@ async def _fiscal_retry_worker() -> None:
     """Фоновая задача: повторная фискализация неудачных чеков (54-ФЗ)."""
     from payments.fiscal import fiscalize_order
 
-    await asyncio.sleep(120)  # начальная задержка
+    await asyncio.sleep(FISCAL_INITIAL_DELAY_SECONDS)
 
     # Восстановление: записи застрявшие в "processing" после крэша — вернуть в pending
     try:
@@ -2786,7 +2909,7 @@ async def _fiscal_retry_worker() -> None:
                         FiscalQueue.status == "pending",
                         FiscalQueue.next_retry_at <= now_utc(),
                         FiscalQueue.attempts < FiscalQueue.max_attempts,
-                    ).order_by(FiscalQueue.next_retry_at).limit(5)
+                    ).order_by(FiscalQueue.next_retry_at).limit(FISCAL_RETRY_BATCH_SIZE)
                 ).all()
 
                 for fq in pending:

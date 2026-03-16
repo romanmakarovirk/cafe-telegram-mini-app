@@ -768,6 +768,11 @@ class TestApiEndpoints:
     def test_healthz(self):
         resp = self.client.get("/healthz")
         assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_readyz(self):
+        resp = self.client.get("/readyz")
+        assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
         assert "checks" in data
@@ -1465,7 +1470,7 @@ class TestHealthCheckExtended:
 
     def test_healthz_structure(self):
         """Health check возвращает структурированный JSON."""
-        resp = self.client.get("/healthz")
+        resp = self.client.get("/readyz")
         assert resp.status_code == 200
         data = resp.json()
         assert "status" in data
@@ -1478,13 +1483,13 @@ class TestHealthCheckExtended:
 
     def test_healthz_db_ok(self):
         """Health check: БД работает."""
-        resp = self.client.get("/healthz")
+        resp = self.client.get("/readyz")
         data = resp.json()
         assert data["checks"]["database"]["status"] == "ok"
 
     def test_healthz_bot_not_configured(self):
         """Health check: бот не настроен."""
-        resp = self.client.get("/healthz")
+        resp = self.client.get("/readyz")
         data = resp.json()
         assert data["checks"]["telegram_bot"]["status"] == "not_configured"
 
@@ -2522,9 +2527,9 @@ class TestOrderTimeout(_AppTestBase):
 class TestHealthCheckExtendedV2(_AppTestBase):
     """Расширенные тесты healthcheck."""
 
-    def test_healthz_all_services(self):
-        """Health check показывает все сервисы."""
-        resp = self.client.get("/healthz")
+    def test_readyz_all_services(self):
+        """Readiness check показывает все сервисы."""
+        resp = self.client.get("/readyz")
         data = resp.json()
         assert data["status"] in ("ok", "degraded")
         checks = data["checks"]
@@ -2534,8 +2539,8 @@ class TestHealthCheckExtendedV2(_AppTestBase):
         assert "accounting_1c" in checks
         assert "sbp_payments" in checks
 
-    def test_healthz_db_ok(self):
-        resp = self.client.get("/healthz")
+    def test_readyz_db_ok(self):
+        resp = self.client.get("/readyz")
         assert resp.json()["checks"]["database"]["status"] == "ok"
         assert "backend" in resp.json()["checks"]["database"]
 
@@ -2985,6 +2990,177 @@ class TestEdgeCaseHacker(_AppTestBase):
         # Если сумма > MAX_ORDER_TOTAL_RUB, должен быть 400
         # Если нет — просто проверяем что не crash
         assert resp.status_code in (200, 400)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PRODUCTION READINESS TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestStartupValidation:
+    """Проверка validate_production_config()."""
+
+    def test_dev_mode_allows_missing_secrets(self):
+        """DEV_MODE=true не крашит приложение при отсутствии секретов."""
+        os.environ["DEV_MODE"] = "true"
+        os.environ["BOT_TOKEN"] = ""
+        os.environ["KITCHEN_API_KEY"] = ""
+        os.environ["ALLOWED_ADMIN_IDS"] = ""
+        import importlib
+        import main as m
+        importlib.reload(m)
+        # Не должно поднять SystemExit
+        m.validate_production_config()
+
+    def test_prod_mode_blocks_missing_secrets(self):
+        """DEV_MODE=false + missing secrets = SystemExit."""
+        os.environ["DEV_MODE"] = "false"
+        os.environ["BOT_TOKEN"] = ""
+        os.environ["KITCHEN_API_KEY"] = ""
+        os.environ["ALLOWED_ADMIN_IDS"] = ""
+        import importlib
+        import main as m
+        importlib.reload(m)
+        with pytest.raises(SystemExit):
+            m.validate_production_config()
+        # Restore
+        os.environ["DEV_MODE"] = "true"
+        importlib.reload(m)
+
+    def test_prod_mode_ok_with_all_secrets(self):
+        """DEV_MODE=false + все секреты на месте = OK."""
+        os.environ["DEV_MODE"] = "false"
+        os.environ["BOT_TOKEN"] = "123:ABC"
+        os.environ["KITCHEN_API_KEY"] = "test-key-123"
+        os.environ["ALLOWED_ADMIN_IDS"] = "12345"
+        import importlib
+        import main as m
+        importlib.reload(m)
+        m.validate_production_config()  # Не должно крашиться
+        # Restore
+        os.environ["DEV_MODE"] = "true"
+        os.environ["BOT_TOKEN"] = ""
+        importlib.reload(m)
+
+
+class TestHealthEndpoints(_AppTestBase):
+    """Проверка /healthz (liveness) и /readyz (readiness)."""
+
+    def test_healthz_lightweight(self):
+        """Liveness probe возвращает 200 без обращения к БД."""
+        resp = self.client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_readyz_full_check(self):
+        """/readyz возвращает полную диагностику."""
+        resp = self.client.get("/readyz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "checks" in data
+        assert "database" in data["checks"]
+        assert "secrets" in data["checks"]
+        assert data["checks"]["database"]["status"] == "ok"
+
+    def test_readyz_includes_dev_mode(self):
+        """/readyz показывает dev_mode статус."""
+        resp = self.client.get("/readyz")
+        data = resp.json()
+        assert "dev_mode" in data
+
+
+class TestFiscalQueueAdmin(_AppTestBase):
+    """Тесты admin endpoints для fiscal queue."""
+
+    def test_get_fiscal_queue_empty(self):
+        """Пустая очередь фискализации."""
+        resp = self.client.get("/api/admin/fiscal-queue", headers=self.KITCHEN_HEADERS)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 0
+        assert data["entries"] == []
+
+    def test_get_fiscal_queue_requires_auth(self):
+        """Без kitchen key → 403."""
+        resp = self.client.get("/api/admin/fiscal-queue")
+        assert resp.status_code == 403
+
+    def test_get_fiscal_queue_with_filter(self):
+        """Фильтрация по статусу."""
+        resp = self.client.get("/api/admin/fiscal-queue?status_filter=failed", headers=self.KITCHEN_HEADERS)
+        assert resp.status_code == 200
+
+    def test_retry_fiscal_entry_not_found(self):
+        """Retry несуществующей записи → 404."""
+        resp = self.client.post("/api/admin/fiscal-queue/999/retry", headers=self.KITCHEN_HEADERS)
+        assert resp.status_code == 404
+
+    def test_retry_fiscal_entry_success(self):
+        """Retry failed записи → pending."""
+        # Создаём заказ и fiscal queue entry
+        order_data = self._create_order()
+        if "_error" not in order_data:
+            oid = order_data["order_id"]
+            with self.Session() as session:
+                order = session.get(self.m.Order, oid)
+                fq = self.m.FiscalQueue(
+                    order_id=oid,
+                    order_number=order.public_order_number,
+                    operation="sell",
+                    payload_json='{"items":[],"total_amount":100}',
+                    status="failed",
+                    attempts=10,
+                    max_attempts=10,
+                    last_error="Test error",
+                    created_at=self.m.now_utc(),
+                    next_retry_at=self.m.now_utc(),
+                )
+                session.add(fq)
+                session.commit()
+                fq_id = fq.id
+
+            resp = self.client.post(f"/api/admin/fiscal-queue/{fq_id}/retry", headers=self.KITCHEN_HEADERS)
+            assert resp.status_code == 200
+
+            # Проверяем что сброшено
+            with self.Session() as session:
+                fq = session.get(self.m.FiscalQueue, fq_id)
+                assert fq.status == "pending"
+                assert fq.attempts == 0
+
+
+class TestAtolInnNotHardcoded:
+    """Проверка что ATOL_INN не содержит хардкод."""
+
+    def test_atol_inn_default_empty(self):
+        """Дефолтное значение ATOL_INN должно быть пустым."""
+        old_val = os.environ.pop("ATOL_INN", None)
+        try:
+            import importlib
+            import payments.fiscal as f
+            importlib.reload(f)
+            assert f.ATOL_INN == ""
+        finally:
+            if old_val is not None:
+                os.environ["ATOL_INN"] = old_val
+
+
+class TestNamedConstants:
+    """Проверка что константы определены и имеют корректные значения."""
+
+    def test_constants_exist(self):
+        import main as m
+        assert hasattr(m, "AUTH_DATE_MAX_AGE_SECONDS")
+        assert hasattr(m, "RATE_LIMIT_ORDERS")
+        assert hasattr(m, "FISCAL_RETRY_BATCH_SIZE")
+        assert hasattr(m, "KEEPALIVE_INTERVAL_SECONDS")
+
+    def test_constants_values(self):
+        import main as m
+        assert m.AUTH_DATE_MAX_AGE_SECONDS == 86400
+        assert m.RATE_LIMIT_ORDERS == 10
+        assert m.FISCAL_RETRY_BATCH_SIZE == 5
+        assert m.KEEPALIVE_INTERVAL_SECONDS == 840
 
 
 # ══════════════════════════════════════════════════════════════════════════════
