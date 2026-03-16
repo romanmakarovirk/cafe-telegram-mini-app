@@ -114,3 +114,9 @@ SQLALCHEMY_DATABASE_URL = normalize_database_url(DATABASE_URL)
 ENGINE_KWARGS: dict[str, Any] = {"future": True, "pool_pre_ping": True}
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     ENGINE_KWARGS["connect_args"] = {"check_same_thread": False}
+else:
+    # PostgreSQL connection pool settings for production
+    ENGINE_KWARGS["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
+    ENGINE_KWARGS["max_overflow"] = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    ENGINE_KWARGS["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    ENGINE_KWARGS["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE", "1800"))

@@ -105,41 +105,40 @@ def seed_menu_items(session: Session) -> None:
     session.commit()
 
 
-def _migrate_sqlite_columns() -> None:
-    """Add new nullable columns to existing SQLite tables."""
-    if not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-        return
-    import sqlite3
-    db_path = SQLALCHEMY_DATABASE_URL.replace("sqlite:///", "")
+def _migrate_columns() -> None:
+    """Add new nullable columns to existing tables (SQLite and PostgreSQL)."""
+    from sqlalchemy import inspect as sa_inspect, text
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(menu_items)")}
-        if "unavailable_reason" not in existing_cols:
-            cursor.execute("ALTER TABLE menu_items ADD COLUMN unavailable_reason VARCHAR(200)")
-            logging.info("Migration: added menu_items.unavailable_reason column")
-        if "available_at" not in existing_cols:
-            cursor.execute("ALTER TABLE menu_items ADD COLUMN available_at DATETIME")
-            logging.info("Migration: added menu_items.available_at column")
+        inspector = sa_inspect(sys.modules[__name__].engine)
 
-        order_cols = {row[1] for row in cursor.execute("PRAGMA table_info(orders)")}
-        if "customer_name" not in order_cols:
-            cursor.execute("ALTER TABLE orders ADD COLUMN customer_name VARCHAR(200)")
-            logging.info("Migration: added orders.customer_name column")
-        if "customer_comment" not in order_cols:
-            cursor.execute("ALTER TABLE orders ADD COLUMN customer_comment VARCHAR(500)")
-            logging.info("Migration: added orders.customer_comment column")
+        if "menu_items" in inspector.get_table_names():
+            existing = {col["name"] for col in inspector.get_columns("menu_items")}
+            with sys.modules[__name__].engine.begin() as conn:
+                if "unavailable_reason" not in existing:
+                    conn.execute(text("ALTER TABLE menu_items ADD COLUMN unavailable_reason VARCHAR(200)"))
+                    logging.info("Migration: added menu_items.unavailable_reason column")
+                if "available_at" not in existing:
+                    col_type = "TIMESTAMP WITH TIME ZONE" if "postgresql" in SQLALCHEMY_DATABASE_URL else "DATETIME"
+                    conn.execute(text(f"ALTER TABLE menu_items ADD COLUMN available_at {col_type}"))
+                    logging.info("Migration: added menu_items.available_at column")
 
-        conn.commit()
-        conn.close()
+        if "orders" in inspector.get_table_names():
+            existing = {col["name"] for col in inspector.get_columns("orders")}
+            with sys.modules[__name__].engine.begin() as conn:
+                if "customer_name" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN customer_name VARCHAR(200)"))
+                    logging.info("Migration: added orders.customer_name column")
+                if "customer_comment" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN customer_comment VARCHAR(500)"))
+                    logging.info("Migration: added orders.customer_comment column")
     except Exception:
-        logging.exception("SQLite migration failed (non-critical)")
+        logging.exception("Column migration failed (non-critical)")
 
 
 def initialize_database() -> None:
     import bot_setup
     Base.metadata.create_all(bind=sys.modules[__name__].engine)
-    _migrate_sqlite_columns()
+    _migrate_columns()
     with db_session() as session:
         seed_menu_items(session)
         saved_admin_chat_id = load_setting(session, "admin_chat_id")
