@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      DEV_MODE: "true"
+      BOT_TOKEN: ""
+      KITCHEN_API_KEY: "test-kitchen-key-12345"
+      DATABASE_URL: "sqlite:///test.db"
+      SBP_TEST_MODE: "true"
+      ATOL_TEST_MODE: "true"
+      FRESH_ENABLED: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest test_system.py -v

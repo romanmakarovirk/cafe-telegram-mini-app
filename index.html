@@ -219,7 +219,21 @@
       font-size: 14px;
       font-weight: 700;
       color: #4d3a2f;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
     }
+
+    .category-link.active {
+      background: var(--tg-button-color);
+      color: var(--tg-button-text-color);
+      border-color: var(--tg-button-color);
+    }
+
+    /* Card fade-in on scroll */
+    .card { opacity: 0; transform: translateY(18px); transition: opacity 0.45s ease, transform 0.45s ease; }
+    .card.visible { opacity: 1; transform: translateY(0); }
+
+    /* No search results */
+    .no-results { text-align: center; padding: 40px 16px; color: var(--tg-hint-color); font-size: 15px; }
 
     .section {
       margin-bottom: 16px;
@@ -553,6 +567,15 @@
       font-weight: 800;
     }
 
+    @keyframes cart-bounce {
+      0% { transform: scale(1); }
+      30% { transform: scale(1.18); }
+      50% { transform: scale(0.92); }
+      70% { transform: scale(1.06); }
+      100% { transform: scale(1); }
+    }
+    .cart-count.bounce { animation: cart-bounce 0.4s ease; }
+
     .modal {
       position: fixed;
       inset: 0;
@@ -803,6 +826,20 @@
     .toast.error {
       background: rgba(130, 39, 30, 0.96);
     }
+
+    .toast-retry {
+      display: inline-block;
+      margin-left: 12px;
+      padding: 4px 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+    }
+    .toast-retry:hover { background: rgba(255,255,255,0.35); }
 
     /* SBP Payment Modal */
     .sbp-sheet {
@@ -1507,13 +1544,21 @@
       return `${new Intl.NumberFormat("ru-RU").format(value)} \u20BD`;
     }
 
-    function showToast(message, type = "default") {
-      toast.textContent = message;
+    function showToast(message, type = "default", retryFn = null) {
+      toast.innerHTML = "";
+      toast.appendChild(document.createTextNode(message));
+      if (retryFn && type === "error") {
+        const btn = document.createElement("button");
+        btn.className = "toast-retry";
+        btn.textContent = "Повторить";
+        btn.onclick = () => { toast.className = "toast"; retryFn(); };
+        toast.appendChild(btn);
+      }
       toast.className = `toast visible ${type === "error" ? "error" : ""}`.trim();
       window.clearTimeout(toastTimer);
       toastTimer = window.setTimeout(() => {
         toast.className = "toast";
-      }, 3200);
+      }, retryFn ? 6000 : 3200);
     }
 
     // ---- Working Hours ----
@@ -1749,6 +1794,10 @@
       updateCartBadge();
       saveCart();
       updateCardBadges();
+      // Cart badge bounce animation
+      cartCount.classList.remove("bounce");
+      void cartCount.offsetWidth; // reflow trigger
+      cartCount.classList.add("bounce");
       if (tg && tg.HapticFeedback) {
         tg.HapticFeedback.impactOccurred("light");
       }
@@ -2308,9 +2357,11 @@
     const searchInput = document.getElementById("search-input");
     const searchClear = document.getElementById("search-clear");
     let searchQuery = "";
+    let searchDebounceTimer = null;
 
     function applySearch() {
       const q = searchQuery.toLowerCase().trim();
+      let totalVisible = 0;
       document.querySelectorAll(".panel.section").forEach(section => {
         const cards = section.querySelectorAll(".card");
         let visibleCount = 0;
@@ -2322,13 +2373,29 @@
           if (match) visibleCount++;
         });
         section.style.display = visibleCount > 0 ? "" : "none";
+        totalVisible += visibleCount;
       });
+      // Show "no results" message
+      let noResults = document.getElementById("no-results");
+      if (q && totalVisible === 0) {
+        if (!noResults) {
+          noResults = document.createElement("div");
+          noResults.id = "no-results";
+          noResults.className = "no-results";
+          menuRoot.appendChild(noResults);
+        }
+        noResults.textContent = "Ничего не найдено по запросу «" + searchQuery.trim() + "»";
+        noResults.style.display = "";
+      } else if (noResults) {
+        noResults.style.display = "none";
+      }
     }
 
     searchInput.addEventListener("input", () => {
       searchQuery = searchInput.value;
       searchClear.classList.toggle("visible", searchQuery.length > 0);
-      applySearch();
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(applySearch, 300);
     });
     searchClear.addEventListener("click", () => {
       searchInput.value = "";
@@ -2354,7 +2421,9 @@
       }
       historyToggle.setAttribute("aria-expanded", "true");
       if (!historyLoaded) {
-        historyList.innerHTML = '<div style="padding:16px;text-align:center;color:#7c6858;font-size:14px;">Загрузка...</div>';
+        historyList.innerHTML = '<div class="skeleton-grid" style="grid-template-columns:1fr">' +
+          Array.from({length: 3}, () => '<div class="skeleton-card" style="border-radius:16px"><div class="skeleton-body"><div class="skeleton-line" style="width:40%"></div><div class="skeleton-line" style="width:70%"></div><div class="skeleton-line" style="width:30%"></div></div></div>').join("") +
+          '</div>';
         historyList.classList.add("open");
         try {
           const resp = await fetch("/api/my-orders?limit=10", { headers: apiHeaders() });
@@ -2532,12 +2601,87 @@
       historySection.style.display = "";
     }
 
-    showSkeleton();
+    function initApp() {
+      showSkeleton();
+      Promise.all([fetchMenu(), fetchAppConfig()]).then(() => {
+        // skeleton replaced by renderMenu
+        observeCards();
+        observeCategorySections();
+      }).catch(() => {
+        menuRoot.innerHTML = `<div class="error-box">Не удалось загрузить меню. Попробуйте перезагрузить страницу.</div>`;
+        showToast("Не удалось загрузить меню", "error", initApp);
+      });
+    }
 
-    Promise.all([fetchMenu(), fetchAppConfig()]).then(() => {
-      // skeleton replaced by renderMenu
-    }).catch(() => {
-      menuRoot.innerHTML = `<div class="error-box">Не удалось загрузить меню. Попробуйте перезагрузить страницу.</div>`;
+    initApp();
+
+    // ---- Fade-in cards on scroll (IntersectionObserver) ----
+    function observeCards() {
+      if (!("IntersectionObserver" in window)) {
+        document.querySelectorAll(".card").forEach(c => c.classList.add("visible"));
+        return;
+      }
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) { e.target.classList.add("visible"); obs.unobserve(e.target); }
+        });
+      }, { threshold: 0.1 });
+      document.querySelectorAll(".card").forEach(c => obs.observe(c));
+    }
+
+    // ---- Active category highlight on scroll ----
+    function observeCategorySections() {
+      const links = document.querySelectorAll(".category-link");
+      const sections = document.querySelectorAll(".panel.section[id]");
+      if (!links.length || !sections.length || !("IntersectionObserver" in window)) return;
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            const id = e.target.id;
+            links.forEach(l => l.classList.toggle("active", l.getAttribute("href") === "#" + id));
+          }
+        });
+      }, { rootMargin: "-40% 0px -55% 0px" });
+      sections.forEach(s => obs.observe(s));
+    }
+
+    // ---- Client error reporting ----
+    window.onerror = function(msg, source, lineno, colno, error) {
+      try {
+        fetch("/api/client-error", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: String(msg).slice(0, 2000),
+            source: String(source || "").slice(0, 500),
+            lineno: lineno || 0,
+            colno: colno || 0,
+            stack: (error && error.stack) ? String(error.stack).slice(0, 5000) : "",
+            url: location.href.slice(0, 1000),
+            user_agent: navigator.userAgent.slice(0, 500),
+          }),
+        }).catch(() => {});
+      } catch(e) {}
+    };
+
+    window.addEventListener("unhandledrejection", function(event) {
+      try {
+        const reason = event.reason;
+        const msg = reason instanceof Error ? reason.message : String(reason);
+        fetch("/api/client-error", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: "Unhandled promise rejection: " + msg.slice(0, 1900),
+            source: "",
+            lineno: 0,
+            colno: 0,
+            stack: (reason && reason.stack) ? String(reason.stack).slice(0, 5000) : "",
+            url: location.href.slice(0, 1000),
+            user_agent: navigator.userAgent.slice(0, 500),
+          }),
+        }).catch(() => {});
+      } catch(e) {}
     });
   </script>
 </body>

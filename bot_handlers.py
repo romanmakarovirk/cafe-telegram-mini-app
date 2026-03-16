@@ -1,0 +1,540 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from html import escape
+from typing import Any
+
+from aiogram import F
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Message,
+    WebAppInfo,
+    BotCommand,
+)
+from sqlalchemy import func, select
+
+import bot_setup
+import database
+from config import ALLOWED_ADMIN_IDS, WEBAPP_URL
+from database import IRKUTSK_TZ, rub
+from menu_data import CATEGORY_BY_SLUG, CATEGORY_META, CATEGORY_ORDER
+from models import FiscalQueue, MenuItem, Order, OrderItem
+from serializers import (
+    _format_available_at,
+    build_cashier_keyboard,
+    format_order_for_cashier,
+)
+
+
+# ── Notifications ─────────────────────────────────────────────────────────
+
+async def notify_customer(order: Order, text: str) -> None:
+    if bot_setup.bot is None:
+        return
+    try:
+        await bot_setup.bot.send_message(chat_id=order.telegram_user_id, text=text)
+    except Exception:
+        logging.exception("Failed to notify customer %s", order.telegram_user_id)
+
+
+async def notify_cashier_about_paid_order(order_id: int) -> None:
+    if bot_setup.bot is None:
+        logging.warning("Bot is not configured, cashier notification skipped.")
+        return
+    if bot_setup.ADMIN_CHAT_ID is None:
+        logging.warning("ADMIN_CHAT_ID is not set, cashier notification skipped.")
+        return
+
+    with database.db_session() as session:
+        order = database.fetch_order(session, order_id)
+        try:
+            sent_message = await bot_setup.bot.send_message(
+                chat_id=bot_setup.ADMIN_CHAT_ID,
+                text=format_order_for_cashier(order),
+                reply_markup=build_cashier_keyboard(order.id, order.status),
+            )
+        except Exception:
+            logging.exception("Failed to notify cashier about order %s", order.public_order_number)
+            return
+        order.cashier_message_id = sent_message.message_id
+        order.updated_at = database.now_utc()
+        session.commit()
+
+
+# ── Bot configuration ─────────────────────────────────────────────────────
+
+async def configure_bot_entrypoints() -> None:
+    if bot_setup.bot is None:
+        return
+    try:
+        await bot_setup.bot.set_my_commands(
+            [
+                BotCommand(command="start", description="Открыть меню"),
+                BotCommand(command="admin", description="Назначить этот чат кассой"),
+                BotCommand(command="stop", description="Отключить блюдо (стоп-лист)"),
+                BotCommand(command="stoplist", description="Текущий стоп-лист"),
+                BotCommand(command="stats", description="Статистика за сегодня"),
+            ]
+        )
+        await bot_setup.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Меню",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        )
+    except Exception:
+        logging.exception("Failed to configure Telegram bot entrypoints.")
+
+
+# ── Handlers ──────────────────────────────────────────────────────────────
+
+@bot_setup.router.message(Command("start"))
+async def handle_start(message: Message) -> None:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть меню",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ]
+        ]
+    )
+    text = (
+        "Онлайн-заказ кафе открыт.\n"
+        "Выберите блюда, оформите заказ и ждите уведомления о статусе в Telegram."
+    )
+    await message.answer(text, reply_markup=keyboard)
+
+
+@bot_setup.router.message(Command("admin"))
+async def handle_admin(message: Message) -> None:
+    chat_id = message.chat.id
+
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        logging.warning("Unauthorized /admin attempt from chat_id=%d", chat_id)
+        await message.answer("Доступ запрещён. Обратитесь к владельцу бота.")
+        return
+
+    bot_setup.ADMIN_CHAT_ID = chat_id
+    with database.db_session() as session:
+        database.save_setting(session, "admin_chat_id", str(chat_id))
+    await message.answer(
+        "Этот чат назначен кассой. Сюда будут приходить оплаченные заказы."
+    )
+
+
+VALID_STATUS_TRANSITIONS: dict[str, list[str]] = {
+    "paid": ["preparing", "ready"],
+    "preparing": ["ready"],
+}
+
+
+@bot_setup.router.callback_query(F.data.startswith("order:"))
+async def handle_order_status_change(callback: CallbackQuery) -> None:
+    if callback.data is None or callback.message is None:
+        await callback.answer("Некорректные данные.")
+        return
+
+    try:
+        _, action, raw_order_id = callback.data.split(":")
+        order_id = int(raw_order_id)
+    except (ValueError, TypeError):
+        await callback.answer("Некорректные данные.")
+        return
+
+    with database.db_session() as session:
+        order = database.fetch_order(session, order_id)
+
+        allowed = VALID_STATUS_TRANSITIONS.get(order.status, [])
+        if action not in allowed:
+            await callback.answer("Невозможно изменить статус заказа.")
+            return
+
+        if action == "preparing":
+            order.status = "preparing"
+            order.updated_at = database.now_utc()
+            session.commit()
+            session.refresh(order)
+            _ = order.items
+            await notify_customer(
+                order,
+                f"Заказ №{order.public_order_number} передан на кухню. Сейчас его готовят.",
+            )
+            await callback.message.edit_text(
+                format_order_for_cashier(order),
+                reply_markup=build_cashier_keyboard(order.id, order.status),
+            )
+            await callback.answer("🟡 Готовится")
+            return
+
+        if action == "ready":
+            order.status = "ready"
+            order.updated_at = database.now_utc()
+            session.commit()
+            session.refresh(order)
+            _ = order.items
+            await notify_customer(
+                order,
+                f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!",
+            )
+            await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
+            await callback.answer("🟢 Готов!")
+            return
+
+    await callback.answer("Неизвестное действие.")
+
+
+@bot_setup.router.message(Command("stop"))
+async def handle_stop(message: Message) -> None:
+    """Быстрое отключение блюда: /stop Плов"""
+    chat_id = message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await message.answer("Доступ запрещён.")
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        buttons = []
+        for entry in CATEGORY_META:
+            buttons.append([InlineKeyboardButton(
+                text=f"🚫 {entry['title']}",
+                callback_data=f"sl:cat_off:{entry['slug']}",
+            )])
+        await message.answer(
+            "Укажите название блюда: <code>/stop Плов</code>\n\n"
+            "Или отключите целую категорию:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+        return
+
+    search_query = parts[1].strip().lower()
+
+    with database.db_session() as session:
+        all_items = session.scalars(select(MenuItem)).all()
+        matches = [item for item in all_items if search_query in item.name.lower()]
+
+    if not matches:
+        await message.answer(f"Блюдо «{escape(parts[1].strip())}» не найдено.")
+        return
+
+    if len(matches) == 1:
+        item = matches[0]
+        if not item.is_available:
+            await message.answer(f"«{escape(item.name)}» уже в стоп-листе.")
+            return
+        with database.db_session() as session:
+            db_item = session.get(MenuItem, item.id)
+            if db_item:
+                db_item.is_available = False
+                db_item.unavailable_reason = "Временно недоступно"
+                session.commit()
+
+        buttons = [
+            [
+                InlineKeyboardButton(text="30 мин", callback_data=f"sl:time:{item.id}:30"),
+                InlineKeyboardButton(text="1 час", callback_data=f"sl:time:{item.id}:60"),
+            ],
+            [
+                InlineKeyboardButton(text="2 часа", callback_data=f"sl:time:{item.id}:120"),
+                InlineKeyboardButton(text="Не знаю", callback_data=f"sl:time:{item.id}:0"),
+            ],
+        ]
+        await message.answer(
+            f"🚫 <b>{escape(item.name)}</b> отключено.\n\nКогда будет готово?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+    else:
+        buttons = []
+        for item in matches[:10]:
+            status = "✅" if item.is_available else "🚫"
+            buttons.append([InlineKeyboardButton(
+                text=f"{status} {item.name} ({rub(item.price)})",
+                callback_data=f"sl:off:{item.id}" if item.is_available else f"sl:on:{item.id}",
+            )])
+        await message.answer(
+            f"Найдено {len(matches)} совпадений. Выберите:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+
+@bot_setup.router.message(Command("stoplist"))
+async def handle_stoplist(message: Message) -> None:
+    """Показать текущий стоп-лист."""
+    chat_id = message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await message.answer("Доступ запрещён.")
+        return
+
+    with database.db_session() as session:
+        unavailable = session.scalars(
+            select(MenuItem).where(MenuItem.is_available.is_(False)).order_by(MenuItem.category, MenuItem.name)
+        ).all()
+
+    if not unavailable:
+        await message.answer("✅ Стоп-лист пуст — все блюда доступны.")
+        return
+
+    lines = ["🚫 <b>Стоп-лист:</b>\n"]
+    buttons = []
+    for item in unavailable:
+        cat_title = CATEGORY_BY_SLUG.get(item.category, {}).get("title", "")
+        reason = escape(item.unavailable_reason or "")
+        time_str = _format_available_at(item.available_at) or ""
+        extra = f" ({reason})" if reason else ""
+        extra += f" → вернётся {time_str}" if time_str else ""
+        lines.append(f"• <b>{escape(item.name)}</b> [{escape(cat_title)}]{extra}")
+        buttons.append([InlineKeyboardButton(
+            text=f"✅ Вернуть: {item.name}",
+            callback_data=f"sl:on:{item.id}",
+        )])
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+    )
+
+
+@bot_setup.router.message(Command("stats"))
+async def handle_stats(message: Message) -> None:
+    """Статистика продаж."""
+    chat_id = message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await message.answer("Доступ запрещён.")
+        return
+
+    text_msg = (message.text or "").strip()
+    parts = text_msg.split(maxsplit=1)
+    period = parts[1].strip().lower() if len(parts) > 1 else "today"
+
+    now_irkutsk = datetime.now(IRKUTSK_TZ)
+    today_start = now_irkutsk.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if period in ("week", "неделя"):
+        period_start = today_start - timedelta(days=today_start.weekday())
+        period_label = "за неделю"
+    elif period in ("month", "месяц"):
+        period_start = today_start.replace(day=1)
+        period_label = "за месяц"
+    else:
+        period_start = today_start
+        period_label = "за сегодня"
+
+    period_start_utc = period_start.astimezone(timezone.utc)
+
+    with database.db_session() as session:
+        period_orders = session.scalar(
+            select(func.count(Order.id)).where(
+                Order.payment_status == "paid",
+                Order.created_at >= period_start_utc,
+            )
+        ) or 0
+
+        period_revenue = session.scalar(
+            select(func.sum(Order.total_amount)).where(
+                Order.payment_status == "paid",
+                Order.created_at >= period_start_utc,
+            )
+        ) or 0
+
+        top_items = session.execute(
+            select(
+                OrderItem.name_snapshot,
+                func.sum(OrderItem.quantity).label("total_qty"),
+            ).join(Order).where(
+                Order.payment_status == "paid",
+                Order.created_at >= period_start_utc,
+            ).group_by(OrderItem.name_snapshot)
+            .order_by(func.sum(OrderItem.quantity).desc())
+            .limit(5)
+        ).all()
+
+        stopped_count = session.scalar(
+            select(func.count(MenuItem.id)).where(MenuItem.is_available.is_(False))
+        ) or 0
+
+        pending_orders = session.scalar(
+            select(func.count(Order.id)).where(
+                Order.status.in_(["created", "paid", "preparing"]),
+            )
+        ) or 0
+
+        pending_fiscal = session.scalar(
+            select(func.count(FiscalQueue.id)).where(FiscalQueue.status == "pending")
+        ) or 0
+
+        daily_stats_text = ""
+        if period != "today":
+            daily_stats = session.execute(
+                select(
+                    func.date(Order.created_at).label("day"),
+                    func.count(Order.id).label("cnt"),
+                    func.sum(Order.total_amount).label("rev"),
+                ).where(
+                    Order.payment_status == "paid",
+                    Order.created_at >= period_start_utc,
+                ).group_by(func.date(Order.created_at))
+                .order_by(func.date(Order.created_at).desc())
+                .limit(14)
+            ).all()
+            if daily_stats:
+                daily_lines = "\n".join(
+                    f"  {day}: {cnt} зак. / {rub(rev or 0)}"
+                    for day, cnt, rev in daily_stats
+                )
+                daily_stats_text = f"\n\n<b>По дням:</b>\n{daily_lines}"
+
+    avg = period_revenue // period_orders if period_orders else 0
+    top_lines = "\n".join(
+        f"  {i+1}. {name} — {qty} шт." for i, (name, qty) in enumerate(top_items)
+    )
+
+    text = (
+        f"📊 <b>Статистика {period_label}</b>\n\n"
+        f"Заказов: <b>{period_orders}</b>\n"
+        f"Выручка: <b>{rub(period_revenue)}</b>\n"
+        f"Средний чек: <b>{rub(avg)}</b>\n\n"
+        f"<b>Топ-5 позиций:</b>\n{top_lines or '  Нет данных'}"
+        f"{daily_stats_text}\n\n"
+        f"🚫 В стоп-листе: {stopped_count} блюд\n"
+        f"⏳ Активных заказов: {pending_orders}\n"
+        f"🧾 Неотправленных чеков: {pending_fiscal}"
+    )
+    await message.answer(text)
+
+
+@bot_setup.router.callback_query(F.data.startswith("sl:"))
+async def handle_stoplist_callback(callback: CallbackQuery) -> None:
+    """Обработка inline-кнопок стоп-листа."""
+    if callback.data is None or callback.message is None:
+        await callback.answer("Ошибка.")
+        return
+
+    chat_id = callback.message.chat.id
+    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+        await callback.answer("Доступ запрещён.")
+        return
+
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Неверный формат.")
+        return
+
+    action = parts[1]
+
+    if action == "on":
+        item_id = int(parts[2])
+        with database.db_session() as session:
+            item = session.get(MenuItem, item_id)
+            if item:
+                item.is_available = True
+                item.unavailable_reason = None
+                item.available_at = None
+                session.commit()
+                await callback.answer(f"✅ {item.name} включено")
+                await callback.message.edit_text(
+                    f"✅ <b>{escape(item.name)}</b> снова доступно!",
+                )
+            else:
+                await callback.answer("Блюдо не найдено.")
+
+    elif action == "off":
+        item_id = int(parts[2])
+        with database.db_session() as session:
+            item = session.get(MenuItem, item_id)
+            if item:
+                item.is_available = False
+                item.unavailable_reason = "Временно недоступно"
+                session.commit()
+                buttons = [
+                    [
+                        InlineKeyboardButton(text="30 мин", callback_data=f"sl:time:{item_id}:30"),
+                        InlineKeyboardButton(text="1 час", callback_data=f"sl:time:{item_id}:60"),
+                    ],
+                    [
+                        InlineKeyboardButton(text="2 часа", callback_data=f"sl:time:{item_id}:120"),
+                        InlineKeyboardButton(text="Не знаю", callback_data=f"sl:time:{item_id}:0"),
+                    ],
+                ]
+                await callback.message.edit_text(
+                    f"🚫 <b>{escape(item.name)}</b> отключено.\n\nКогда будет готово?",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                )
+                await callback.answer(f"🚫 {item.name} отключено")
+            else:
+                await callback.answer("Блюдо не найдено.")
+
+    elif action == "cat_off":
+        slug = parts[2]
+        cat_info = CATEGORY_BY_SLUG.get(slug)
+        if not cat_info:
+            await callback.answer("Категория не найдена.")
+            return
+        with database.db_session() as session:
+            items = session.scalars(
+                select(MenuItem).where(MenuItem.category == slug, MenuItem.is_available.is_(True))
+            ).all()
+            count = len(items)
+            for item in items:
+                item.is_available = False
+                item.unavailable_reason = "Категория временно недоступна"
+            session.commit()
+        await callback.message.edit_text(
+            f"🚫 Категория <b>{escape(cat_info['title'])}</b> отключена ({count} блюд).\n"
+            f"Для включения: /stoplist",
+        )
+        await callback.answer(f"🚫 {cat_info['title']} отключена")
+
+    elif action == "cat_on":
+        slug = parts[2]
+        cat_info = CATEGORY_BY_SLUG.get(slug)
+        if not cat_info:
+            await callback.answer("Категория не найдена.")
+            return
+        with database.db_session() as session:
+            items = session.scalars(
+                select(MenuItem).where(MenuItem.category == slug, MenuItem.is_available.is_(False))
+            ).all()
+            count = len(items)
+            for item in items:
+                item.is_available = True
+                item.unavailable_reason = None
+                item.available_at = None
+            session.commit()
+        await callback.message.edit_text(
+            f"✅ Категория <b>{escape(cat_info['title'])}</b> включена ({count} блюд).",
+        )
+        await callback.answer(f"✅ {cat_info['title']} включена")
+
+    elif action == "time":
+        if len(parts) < 4:
+            await callback.answer("Ошибка.")
+            return
+        item_id = int(parts[2])
+        minutes = int(parts[3])
+        with database.db_session() as session:
+            item = session.get(MenuItem, item_id)
+            if item:
+                if minutes > 0:
+                    item.available_at = database.now_utc() + timedelta(minutes=minutes)
+                    item.unavailable_reason = f"Будет готово {_format_available_at(item.available_at) or 'позже'}"
+                    session.commit()
+                    await callback.message.edit_text(
+                        f"🚫 <b>{escape(item.name)}</b> отключено.\n"
+                        f"⏰ Вернётся автоматически {_format_available_at(item.available_at)}",
+                    )
+                    await callback.answer(f"Таймер установлен: {minutes} мин")
+                else:
+                    await callback.message.edit_text(
+                        f"🚫 <b>{escape(item.name)}</b> отключено.\n"
+                        f"Включите вручную: /stoplist",
+                    )
+                    await callback.answer("Блюдо отключено без таймера")
+            else:
+                await callback.answer("Блюдо не найдено.")
