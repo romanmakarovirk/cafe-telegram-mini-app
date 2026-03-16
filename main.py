@@ -697,6 +697,11 @@ def get_verified_user_info(request: Request) -> tuple[int, str]:
             first_name = user.get("first_name", "")
             last_name = user.get("last_name", "")
             name = f"{first_name} {last_name}".strip() or f"User {user['id']}"
+            # Санитизация: удаляем HTML-теги и null bytes из имени
+            import re as _re
+            name = _re.sub(r"<[^>]+>", "", name).replace("\x00", "").strip()[:200]
+            if not name:
+                name = f"User {user['id']}"
             return int(user["id"]), name
         logging.warning("Auth failed: reason=%s, initData_len=%d, path=%s",
                         reason, len(init_data), request.url.path)
@@ -785,7 +790,7 @@ class CartItem(BaseModel):
 
 
 class CreateOrderRequest(BaseModel):
-    items: list[CartItem]
+    items: list[CartItem] = Field(min_length=1, max_length=20)
     comment: str = Field(default="", max_length=500)
 
 
@@ -1060,7 +1065,11 @@ def next_public_order_number(session: Session) -> int:
     current = session.scalar(select(func.max(Order.public_order_number)))
     if current is None:
         return 4648
-    return current + 1
+    next_num = current + 1
+    # Wrap после 99999 → начинаем с 10000 (5-значные номера)
+    if next_num > 99999:
+        next_num = 10000
+    return next_num
 
 
 def fetch_order(session: Session, order_id: int) -> Order:
@@ -1932,9 +1941,9 @@ async def create_order(payload: CreateOrderRequest, request: Request) -> dict[st
                 if len(menu_items) != len(requested_quantities):
                     raise HTTPException(status_code=400, detail="Some menu items are unavailable.")
 
-                # Sanitize comment
+                # Sanitize comment: удаляем HTML-теги и null bytes
                 import re as _re
-                clean_comment = _re.sub(r"<[^>]+>", "", payload.comment).strip() if payload.comment else ""
+                clean_comment = _re.sub(r"<[^>]+>", "", payload.comment).replace("\x00", "").strip() if payload.comment else ""
 
                 total = 0
                 order = Order(
@@ -1993,7 +2002,7 @@ async def create_order(payload: CreateOrderRequest, request: Request) -> dict[st
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sbp/create-payment/{order_id}")
-async def sbp_create_payment(order_id: int, request: Request) -> dict[str, Any]:
+async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_647)], request: Request) -> dict[str, Any]:
     """
     Создаёт платёж через СБП Сбербанк.
     Возвращает deeplink для оплаты в мобильном приложении банка.
@@ -2054,7 +2063,7 @@ async def sbp_create_payment(order_id: int, request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/sbp/check-status/{order_id}")
-async def sbp_check_status(order_id: int, request: Request) -> dict[str, Any]:
+async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_647)], request: Request) -> dict[str, Any]:
     """
     Проверяет статус платежа через Sberbank API.
     Фронтенд вызывает каждые 3-5 сек после перехода в приложение банка.
@@ -2086,6 +2095,17 @@ async def sbp_check_status(order_id: int, request: Request) -> dict[str, Any]:
         return {"status": "check_error", "error": result.error_message}
 
     if result.is_paid:
+        # Проверяем сумму: amount из Сбербанка (копейки) должна совпасть с order.total_amount * 100
+        with db_session() as session:
+            order_check = fetch_order(session, order_id)
+            expected_kopecks = order_check.total_amount * 100
+            if result.amount and result.amount != expected_kopecks:
+                logging.critical(
+                    "AMOUNT MISMATCH: order %d expected %d kopecks, got %d from SBP",
+                    order_id, expected_kopecks, result.amount,
+                )
+                return {"status": "amount_mismatch", "error": "Сумма оплаты не совпадает с суммой заказа."}
+
         # Оплата подтверждена — запускаем полный автоматический цикл
         await _process_paid_order(order_id)
 
@@ -2147,6 +2167,18 @@ async def sbp_callback(request: Request) -> dict[str, str]:
             ).first()
 
             if order and order.payment_status != "paid":
+                # Верификация суммы через Sberbank API
+                from payments.sbp import check_sbp_payment
+                verify_result = await check_sbp_payment(md_order)
+                if verify_result.success and verify_result.amount:
+                    expected_kopecks = order.total_amount * 100
+                    if verify_result.amount != expected_kopecks:
+                        logging.critical(
+                            "CALLBACK AMOUNT MISMATCH: order %d expected %d, got %d",
+                            order.id, expected_kopecks, verify_result.amount,
+                        )
+                        return {"status": "ok"}  # Не обрабатываем — сумма не совпала
+
                 await _process_paid_order(order.id)
                 logging.info("СБП callback: заказ %d оплачен через callback", order.id)
             elif order and order.payment_status == "paid":
@@ -2529,7 +2561,7 @@ async def accounting_status(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/admin/accounting-retry/{order_id}")
-async def accounting_retry(order_id: int, request: Request) -> dict[str, Any]:
+async def accounting_retry(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_647)], request: Request) -> dict[str, Any]:
     """
     Повторная синхронизация заказа с 1С.
     Используется если автоматическая синхронизация не сработала.
@@ -2758,6 +2790,15 @@ async def _fiscal_retry_worker() -> None:
                 ).all()
 
                 for fq in pending:
+                    # Пропускаем записи для отменённых заказов
+                    parent_order = session.get(Order, fq.order_id)
+                    if parent_order and parent_order.status == "cancelled":
+                        fq.status = "failed"
+                        fq.last_error = "Order cancelled — fiscal retry skipped"
+                        session.commit()
+                        logging.info("Fiscal retry: пропуск отменённого заказа %d", fq.order_id)
+                        continue
+
                     fq.status = "processing"
                     fq.attempts += 1
                     session.commit()
@@ -2917,6 +2958,9 @@ async def submit_review(payload: SubmitReviewRequest, request: Request) -> dict[
             raise HTTPException(status_code=404, detail="Order not found.")
         if order.telegram_user_id != verified_user_id:
             raise HTTPException(status_code=403, detail="Not your order.")
+        # Отзыв только для оплаченных заказов
+        if order.payment_status != "paid":
+            raise HTTPException(status_code=400, detail="Отзыв возможен только для оплаченных заказов.")
 
         existing = session.scalars(
             select(Review).where(
@@ -2927,11 +2971,15 @@ async def submit_review(payload: SubmitReviewRequest, request: Request) -> dict[
         if existing:
             return {"status": "already_submitted"}
 
+        # Санитизация комментария: убираем HTML-теги и null bytes
+        import re as _re
+        clean_comment = _re.sub(r"<[^>]+>", "", payload.comment).replace("\x00", "").strip() if payload.comment else ""
+
         review = Review(
             order_id=payload.order_id,
             telegram_user_id=verified_user_id,
             rating=payload.rating,
-            comment=payload.comment.strip() if payload.comment else "",
+            comment=clean_comment,
             created_at=now_utc(),
         )
         session.add(review)
