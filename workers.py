@@ -185,6 +185,11 @@ async def _fiscal_retry_worker() -> None:
                             "Fiscal retry: ИСЧЕРПАНЫ ПОПЫТКИ для заказа %d (54-ФЗ нарушение!)",
                             fq.order_id,
                         )
+                        from bot_handlers import alert_admin
+                        await alert_admin(
+                            f"Фискализация заказа #{fq.order_id} провалилась после "
+                            f"{fq.attempts} попыток! Возможно нарушение 54-ФЗ."
+                        )
 
                     session.commit()
         except Exception:

@@ -599,6 +599,30 @@ async def _process_paid_order(order_id: int) -> None:
         if order is None:
             return
 
+        # Check stoplist — cancel if items became unavailable after order creation
+        unavailable_items = (
+            session.query(MenuItem)
+            .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
+            .filter(OrderItem.order_id == order.id, MenuItem.is_available.is_(False))
+            .all()
+        )
+        if unavailable_items:
+            names = ", ".join(item.name for item in unavailable_items)
+            order.status = "cancelled"
+            order.payment_status = "cancelled"
+            order.updated_at = now_utc()
+            session.commit()
+            logging.warning(
+                "Order %s cancelled at payment: unavailable items: %s",
+                order.id, names,
+            )
+            from bot_handlers import alert_admin
+            await alert_admin(
+                f"Заказ #{order.public_order_number} отменён при оплате — "
+                f"позиции в стоп-листе: {names}"
+            )
+            return
+
         order.payment_status = "paid"
         order.status = "paid"
         order.updated_at = now_utc()

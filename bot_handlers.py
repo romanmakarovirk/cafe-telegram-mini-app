@@ -42,6 +42,20 @@ async def notify_customer(order: Order, text: str) -> None:
         logging.exception("Failed to notify customer %s", order.telegram_user_id)
 
 
+async def alert_admin(message: str) -> None:
+    """Send critical alert to admin via Telegram."""
+    if not bot_setup.bot or not bot_setup.ADMIN_CHAT_ID:
+        logging.error("Cannot send admin alert (bot not configured): %s", message)
+        return
+    try:
+        await bot_setup.bot.send_message(
+            chat_id=bot_setup.ADMIN_CHAT_ID,
+            text=f"\u26a0\ufe0f <b>ALERT</b>\n\n{message}",
+        )
+    except Exception:
+        logging.exception("Failed to send admin alert")
+
+
 async def notify_cashier_about_paid_order(order_id: int) -> None:
     if bot_setup.bot is None:
         logging.warning("Bot is not configured, cashier notification skipped.")

@@ -124,6 +124,26 @@ async def lifespan(_: FastAPI):
     else:
         logging.warning("BOT_TOKEN is empty. FastAPI will run without Telegram bot.")
 
+    # Bot polling watchdog — restarts polling if it crashes
+    watchdog_task = None
+    if BOT_TOKEN:
+        async def _bot_polling_watchdog():
+            while True:
+                await asyncio.sleep(30)
+                task = _bot_setup_module.bot_polling_task
+                if task and task.done() and not task.cancelled():
+                    exc = task.exception() if not task.cancelled() else None
+                    logging.critical("Bot polling crashed: %s. Restarting...", exc)
+                    from bot_handlers import alert_admin
+                    await alert_admin(f"Bot polling упал: {exc}. Перезапускаю...")
+                    _bot_setup_module.bot_polling_task = asyncio.create_task(
+                        dispatcher.start_polling(
+                            _bot_setup_module.bot,
+                            allowed_updates=dispatcher.resolve_used_update_types(),
+                        )
+                    )
+        watchdog_task = asyncio.create_task(_bot_polling_watchdog())
+
     try:
         yield
     finally:
@@ -135,6 +155,10 @@ async def lifespan(_: FastAPI):
             keep_alive_task.cancel()
             with suppress(asyncio.CancelledError):
                 await keep_alive_task
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watchdog_task
         if _bot_setup_module.bot_polling_task is not None:
             _bot_setup_module.bot_polling_task.cancel()
             with suppress(asyncio.CancelledError):
