@@ -51,6 +51,14 @@ import bot_setup
 
 router = APIRouter()
 
+# Structured audit logger for payment/fiscal events (54-FZ compliance)
+_audit = logging.getLogger("audit.payment")
+
+
+def audit_log(event: str, **kwargs: Any) -> None:
+    """Log a structured payment/fiscal event for audit trail."""
+    _audit.info("%s | %s", event, " | ".join(f"{k}={v}" for k, v in kwargs.items()))
+
 
 def _get_cafe_schedule() -> dict[str, Any]:
     """Look up get_cafe_schedule through main module for test patchability."""
@@ -402,6 +410,7 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
 
     verified_user_id = get_verified_user_id(request)
 
+    # 1. Проверяем и блокируем заказ, собираем данные для СБП
     with db_session() as session:
         order = session.scalars(
             select(Order).where(Order.id == order_id).with_for_update()
@@ -418,6 +427,9 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
             _ = order.items
             return {"status": "already_paid", **serialize_order(order)}
 
+        if order.gateway_order_id == "creating":
+            return {"status": "creating", "message": "Платёж создаётся, подождите."}
+
         if order.gateway_order_id:
             _ = order.items
             return {
@@ -426,19 +438,37 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
                 "order": serialize_order(order),
             }
 
-        result = await create_sbp_payment(
-            order_id=order.id,
-            order_number=order.public_order_number,
-            total_amount=order.total_amount,
-        )
-
-        if not result.success:
-            raise HTTPException(status_code=502, detail=f"СБП ошибка: {result.error_message}")
-
-        order.gateway_order_id = result.order_id
-        order.payment_mode = "sbp"
-        order.updated_at = now_utc()
+        # Ставим маркер до HTTP-вызова — предотвращает двойное создание платежа
+        create_order_id = order.id
+        create_order_number = order.public_order_number
+        create_total_amount = order.total_amount
+        order.gateway_order_id = "creating"
         session.commit()
+
+    # 2. HTTP-вызов к СБП — вне FOR UPDATE lock
+    result = await create_sbp_payment(
+        order_id=create_order_id,
+        order_number=create_order_number,
+        total_amount=create_total_amount,
+    )
+
+    # 3. Сохраняем результат (или сбрасываем маркер при ошибке)
+    with db_session() as session:
+        order = session.get(Order, create_order_id)
+        if order:
+            if result.success:
+                order.gateway_order_id = result.order_id
+                order.payment_mode = "sbp"
+                order.updated_at = now_utc()
+                session.commit()
+                audit_log("PAYMENT_CREATED", order_id=order.id, gateway_id=result.order_id,
+                          amount=order.total_amount)
+            else:
+                order.gateway_order_id = None
+                session.commit()
+
+    if not result.success:
+        raise HTTPException(status_code=502, detail=f"СБП ошибка: {result.error_message}")
 
     return {
         "status": "created",
@@ -480,10 +510,20 @@ async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
         with db_session() as session:
             order_check = fetch_order(session, order_id)
             expected_kopecks = order_check.total_amount * 100
-            if result.amount and result.amount != expected_kopecks:
+            if result.amount is not None and result.amount != expected_kopecks:
+                order_check.payment_status = "amount_mismatch"
+                order_check.updated_at = now_utc()
+                session.commit()
                 logging.critical(
                     "AMOUNT MISMATCH: order %d expected %d kopecks, got %d from SBP",
                     order_id, expected_kopecks, result.amount,
+                )
+                audit_log("AMOUNT_MISMATCH_CHECK_STATUS", order_id=order_id,
+                          expected=expected_kopecks, got=result.amount)
+                from bot_handlers import alert_admin
+                await alert_admin(
+                    f"AMOUNT MISMATCH (check_status): заказ #{order_check.public_order_number}, "
+                    f"ожидали {expected_kopecks} коп, получили {result.amount} коп"
                 )
                 return {"status": "amount_mismatch", "error": "Сумма оплаты не совпадает с суммой заказа."}
 
@@ -533,29 +573,65 @@ async def sbp_callback(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="Invalid checksum")
 
     if operation == "deposited" and status == "1":
+        # 1. Короткая блокировка: читаем данные заказа и освобождаем lock
+        order_id_to_process = None
+        expected_kopecks = None
         with db_session() as session:
             order = session.scalars(
-                select(Order).where(Order.gateway_order_id == md_order)
+                select(Order).where(Order.gateway_order_id == md_order).with_for_update()
             ).first()
 
-            if order and order.payment_status != "paid":
-                from payments.sbp import check_sbp_payment
-                verify_result = await check_sbp_payment(md_order)
-                if verify_result.success and verify_result.amount:
-                    expected_kopecks = order.total_amount * 100
-                    if verify_result.amount != expected_kopecks:
-                        logging.critical(
-                            "CALLBACK AMOUNT MISMATCH: order %d expected %d, got %d",
-                            order.id, expected_kopecks, verify_result.amount,
-                        )
-                        return {"status": "ok"}
-
-                await _process_paid_order(order.id)
-                logging.info("СБП callback: заказ %d оплачен через callback", order.id)
-            elif order and order.payment_status == "paid":
+            if order and order.payment_status == "paid":
                 logging.info(
                     "СБП callback: дубликат для уже оплаченного заказа %d (replay ignored)", order.id
                 )
+                session.commit()
+                return {"status": "ok"}
+
+            if order and order.payment_status not in ("paid", "amount_mismatch"):
+                order_id_to_process = order.id
+                expected_kopecks = order.total_amount * 100
+            session.commit()  # release FOR UPDATE lock
+
+        # 2. HTTP-вызов к SBP API ВНЕ блокировки (не держим lock на время сети)
+        if order_id_to_process is not None:
+            from payments.sbp import check_sbp_payment
+            verify_result = await check_sbp_payment(md_order)
+            if not verify_result.success or verify_result.amount is None:
+                logging.warning(
+                    "СБП callback: верификация суммы пропущена (SBP API unavailable), "
+                    "обработка по HMAC для заказа %d", order_id_to_process,
+                )
+            if verify_result.success and verify_result.amount is not None:
+                if verify_result.amount != expected_kopecks:
+                    # 3. Amount mismatch — снова берём lock для обновления статуса
+                    with db_session() as session:
+                        order = session.scalars(
+                            select(Order).where(Order.id == order_id_to_process).with_for_update()
+                        ).first()
+                        if order and order.payment_status not in ("paid", "amount_mismatch"):
+                            logging.critical(
+                                "CALLBACK AMOUNT MISMATCH: order %d expected %d, got %d",
+                                order.id, expected_kopecks, verify_result.amount,
+                            )
+                            order.payment_status = "amount_mismatch"
+                            order.updated_at = now_utc()
+                            session.commit()
+                            audit_log("AMOUNT_MISMATCH", order_id=order.id,
+                                      expected=expected_kopecks, got=verify_result.amount)
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"AMOUNT MISMATCH в callback! Заказ #{order.public_order_number}: "
+                                f"ожидали {expected_kopecks} коп, получили {verify_result.amount} коп. "
+                                f"Заказ помечен для ручного разбора."
+                            )
+                        else:
+                            session.commit()
+                    return {"status": "ok"}
+
+            await _process_paid_order(order_id_to_process)
+            audit_log("CALLBACK_PAID", order_id=order_id_to_process, md_order=md_order)
+            logging.info("СБП callback: заказ %d оплачен через callback", order_id_to_process)
 
     return {"status": "ok"}
 
@@ -621,28 +697,105 @@ async def _process_paid_order(order_id: int) -> None:
         )
         if unavailable_items:
             names = ", ".join(item.name for item in unavailable_items)
+
+            # Сначала отменяем заказ и ОСВОБОЖДАЕМ блокировку (commit),
+            # потом делаем сетевой вызов рефанда (await) вне FOR UPDATE lock.
+            gateway_oid = order.gateway_order_id
+            refund_amount = order.total_amount
+            stoplist_order_id = order.id
+            stoplist_order_number = order.public_order_number
+
             order.status = "cancelled"
-            order.payment_status = "cancelled"
+            order.payment_status = "refund_pending"
             order.updated_at = now_utc()
             session.commit()
+
+        # --- Вне FOR UPDATE lock: сетевой вызов рефанда ---
+        if unavailable_items:
+            if gateway_oid:
+                from payments.sbp import refund_sbp_payment
+                refund_result = await refund_sbp_payment(gateway_oid, refund_amount)
+                with db_session() as refund_session:
+                    o = refund_session.get(Order, stoplist_order_id)
+                    if o:
+                        if refund_result.success:
+                            o.payment_status = "refunded"
+                            audit_log("STOPLIST_REFUND", order_id=stoplist_order_id,
+                                      order_number=stoplist_order_number, items=names)
+
+                            # 54-ФЗ: чек предоплаты + чек возврата предоплаты
+                            fiscal_items = [
+                                {
+                                    "name_snapshot": item.name_snapshot,
+                                    "price_snapshot": item.price_snapshot,
+                                    "quantity": item.quantity,
+                                }
+                                for item in refund_session.query(OrderItem).filter(
+                                    OrderItem.order_id == stoplist_order_id
+                                ).all()
+                            ]
+                            fiscal_payload = json_module.dumps({
+                                "items": fiscal_items,
+                                "total_amount": refund_amount,
+                            })
+                            refund_session.add(FiscalQueue(
+                                order_id=stoplist_order_id,
+                                order_number=stoplist_order_number,
+                                operation="sell",
+                                payload_json=fiscal_payload,
+                                status="pending", attempts=0, max_attempts=10,
+                                created_at=now_utc(),
+                                next_retry_at=now_utc(),
+                            ))
+                            refund_session.add(FiscalQueue(
+                                order_id=stoplist_order_id,
+                                order_number=stoplist_order_number,
+                                operation="sell_refund",
+                                payload_json=fiscal_payload,
+                                status="pending", attempts=0, max_attempts=10,
+                                created_at=now_utc(),
+                                next_retry_at=now_utc() + timedelta(minutes=2),
+                            ))
+                        else:
+                            o.payment_status = "refund_failed"
+                            logging.critical(
+                                "STOPLIST REFUND FAILED: order %d, error: %s",
+                                stoplist_order_id, refund_result.error_message,
+                            )
+                        refund_session.commit()
+
+                if not refund_result.success:
+                    from bot_handlers import alert_admin as alert_admin_refund
+                    await alert_admin_refund(
+                        f"ВОЗВРАТ НЕ УДАЛСЯ! Заказ #{stoplist_order_number}: "
+                        f"деньги ({rub(refund_amount)}) НЕ возвращены клиенту. "
+                        f"Ошибка СБП: {refund_result.error_message}. Требуется ручной возврат!"
+                    )
+            else:
+                with db_session() as refund_session:
+                    o = refund_session.get(Order, stoplist_order_id)
+                    if o:
+                        o.payment_status = "cancelled"
+                        refund_session.commit()
+
             logging.warning(
                 "Order %s cancelled at payment: unavailable items: %s",
-                order.id, names,
+                stoplist_order_id, names,
             )
             from bot_handlers import alert_admin
             await alert_admin(
-                f"Заказ #{order.public_order_number} отменён при оплате — "
-                f"позиции в стоп-листе: {names}"
+                f"Заказ #{stoplist_order_number} отменён при оплате — "
+                f"позиции в стоп-листе: {names}."
             )
             return
 
         order.payment_status = "paid"
         order.status = "paid"
         order.updated_at = now_utc()
-        session.commit()
-        session.refresh(order)
-        _ = order.items
+        audit_log("ORDER_PAID", order_id=order_id, order_number=order.public_order_number,
+                  amount=order.total_amount)
 
+        _ = order.items  # eager load before building fiscal payload
         fiscal_items = [
             {
                 "name_snapshot": item.name_snapshot,
@@ -655,35 +808,33 @@ async def _process_paid_order(order_id: int) -> None:
         order_number = order.public_order_number
         user_id = order.telegram_user_id
 
-    # 2. Фискализация (АТОЛ Онлайн)
-    def _enqueue_fiscal_retry() -> None:
-        """Сохраняем в очередь повторной фискализации (54-ФЗ)."""
+        # Создаём FiscalQueue В ТОЙ ЖЕ транзакции — гарантия 54-ФЗ при краше
+        fiscal_safety_record = FiscalQueue(
+            order_id=order_id,
+            order_number=order_number,
+            operation="sell",
+            payload_json=json_module.dumps({"items": fiscal_items, "total_amount": total_amount}),
+            status="pending",
+            attempts=0,
+            max_attempts=10,
+            created_at=now_utc(),
+            next_retry_at=now_utc() + timedelta(minutes=5),
+        )
+        session.add(fiscal_safety_record)
+        session.commit()
+        fiscal_safety_id = fiscal_safety_record.id
+
+    # 2. Фискализация (АТОЛ Онлайн) — FiscalQueue уже создана выше (гарантия 54-ФЗ)
+    def _mark_fiscal_done(uuid: str) -> None:
+        """Помечаем FiscalQueue как выполненную (онлайн-фискализация успешна)."""
         try:
             with db_session() as fq_session:
-                existing_fq = fq_session.scalars(
-                    select(FiscalQueue).where(
-                        FiscalQueue.order_id == order_id,
-                        FiscalQueue.operation == "sell",
-                        FiscalQueue.status.in_(["pending", "processing"]),
-                    )
-                ).first()
-                if existing_fq:
-                    logging.info("Фискализация: заказ %d уже в retry-очереди (id=%d)", order_id, existing_fq.id)
-                    return
-                fq_session.add(FiscalQueue(
-                    order_id=order_id,
-                    order_number=order_number,
-                    operation="sell",
-                    payload_json=json_module.dumps({"items": fiscal_items, "total_amount": total_amount}),
-                    status="pending",
-                    attempts=1,
-                    created_at=now_utc(),
-                    next_retry_at=now_utc() + timedelta(minutes=5),
-                ))
-                fq_session.commit()
-            logging.info("Фискализация: заказ %d добавлен в retry-очередь", order_id)
+                fq = fq_session.get(FiscalQueue, fiscal_safety_id)
+                if fq:
+                    fq.status = "done"
+                    fq_session.commit()
         except Exception:
-            logging.exception("Не удалось сохранить заказ %d в fiscal retry queue", order_id)
+            logging.exception("Не удалось пометить FiscalQueue %d как done", fiscal_safety_id)
 
     try:
         fiscal_result = await fiscalize_order(
@@ -699,15 +850,15 @@ async def _process_paid_order(order_id: int) -> None:
                 if order:
                     order.fiscal_prepayment_uuid = fiscal_result.uuid
                     session.commit()
+            _mark_fiscal_done(fiscal_result.uuid)
             logging.info("Фискализация: чек создан для заказа %d, uuid=%s",
                          order_id, fiscal_result.uuid)
+            audit_log("FISCAL_PREPAYMENT", order_id=order_id, uuid=fiscal_result.uuid)
         else:
-            logging.error("Фискализация: ошибка для заказа %d: %s",
+            logging.error("Фискализация: ошибка для заказа %d: %s (retry worker подхватит)",
                           order_id, fiscal_result.error)
-            _enqueue_fiscal_retry()
     except Exception:
-        logging.exception("Фискализация: критическая ошибка для заказа %d", order_id)
-        _enqueue_fiscal_retry()
+        logging.exception("Фискализация: критическая ошибка для заказа %d (retry worker подхватит)", order_id)
 
     # 3. Синхронизация с 1С:Бухгалтерия
     try:
@@ -741,12 +892,13 @@ async def _process_paid_order(order_id: int) -> None:
     except Exception:
         logging.exception("1С: критическая ошибка синхронизации для заказа %d", order_id)
 
-    # 4. Автоматически переводим в «Готовится»
+    # 4. Автоматически переводим в «Готовится» (только если кассир ещё не сменил статус)
     with db_session() as session:
         order = fetch_order(session, order_id)
-        order.status = "preparing"
-        order.updated_at = now_utc()
-        session.commit()
+        if order.status == "paid":
+            order.status = "preparing"
+            order.updated_at = now_utc()
+            session.commit()
 
     # 5. Уведомление клиенту
     if bot_setup.bot:

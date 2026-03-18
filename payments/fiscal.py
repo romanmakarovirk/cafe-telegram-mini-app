@@ -185,7 +185,10 @@ class AtolOnlineClient:
         client = await self._get_client()
 
         # Формируем external_id (уникальный для каждого чека)
-        external_id = f"order-{order_id}-{uuid.uuid4().hex[:8]}"
+        # Определяем тип операции для стабильного external_id
+        pm = items[0].get("payment_method", "full_payment") if items else "full_payment"
+        fiscal_suffix = {"prepayment": "prepay", "full_payment": "settle"}.get(pm, "sell")
+        external_id = f"order-{order_id}-{fiscal_suffix}"
 
         # Текущее время по Иркутску (формат: dd.mm.yyyy HH:MM:SS)
         now_irkutsk = datetime.now(IRKUTSK_TZ)
@@ -214,7 +217,7 @@ class AtolOnlineClient:
                 "quantity": quantity,
                 "sum": item_sum,
                 "measurement_unit": "шт",
-                "payment_method": "full_payment",      # Полная оплата
+                "payment_method": item.get("payment_method", "full_payment"),
                 "payment_object": "commodity",           # Товар
                 "vat": {"type": "none"},                 # Без НДС (УСН)
             })
@@ -339,7 +342,7 @@ class AtolOnlineClient:
         token = await self._get_token()
         client = await self._get_client()
 
-        external_id = f"refund-{order_id}-{uuid.uuid4().hex[:8]}"
+        external_id = f"order-{order_id}-refund"
         now_irkutsk = datetime.now(IRKUTSK_TZ)
         timestamp = now_irkutsk.strftime("%d.%m.%Y %H:%M:%S")
 
@@ -362,7 +365,7 @@ class AtolOnlineClient:
                 "quantity": quantity,
                 "sum": item_sum,
                 "measurement_unit": "шт",
-                "payment_method": "full_payment",
+                "payment_method": item.get("payment_method", "full_payment"),
                 "payment_object": "commodity",
                 "vat": {"type": "none"},
             })

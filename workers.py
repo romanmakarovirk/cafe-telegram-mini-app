@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import database
 from config import (
@@ -71,6 +71,7 @@ async def _order_timeout_worker() -> None:
         try:
             cutoff = database.now_utc() - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES)
             with database.db_session() as session:
+                # Логируем заказы, которые будут отменены
                 expired_orders = session.scalars(
                     select(Order).where(
                         Order.status == "created",
@@ -78,18 +79,45 @@ async def _order_timeout_worker() -> None:
                         Order.created_at < cutoff,
                     )
                 ).all()
-
                 for order in expired_orders:
-                    order.status = "cancelled"
-                    order.payment_status = "expired"
-                    order.updated_at = database.now_utc()
                     logging.info(
-                        "Таймаут оплаты: заказ №%d отменён (создан %s)",
+                        "Таймаут оплаты: заказ №%d будет отменён (создан %s)",
                         order.public_order_number,
                         order.created_at.isoformat(),
                     )
 
+                # Atomic conditional UPDATE — не перезапишет заказ,
+                # если payment_status изменился между SELECT и UPDATE
                 if expired_orders:
+                    session.execute(
+                        update(Order).where(
+                            Order.status == "created",
+                            Order.payment_status == "pending",
+                            Order.created_at < cutoff,
+                        ).values(
+                            status="cancelled",
+                            payment_status="expired",
+                            updated_at=database.now_utc(),
+                        )
+                    )
+                    session.commit()
+
+                # Cleanup зависших маркеров "creating" (crash при создании платежа)
+                creating_cutoff = database.now_utc() - timedelta(minutes=5)
+                stuck_creating = session.scalars(
+                    select(Order).where(
+                        Order.gateway_order_id == "creating",
+                        Order.updated_at < creating_cutoff,
+                    )
+                ).all()
+                for order in stuck_creating:
+                    order.gateway_order_id = None
+                    order.updated_at = database.now_utc()
+                    logging.warning(
+                        "Timeout worker: сброс зависшего маркера 'creating' для заказа №%d",
+                        order.public_order_number,
+                    )
+                if stuck_creating:
                     session.commit()
         except Exception:
             logging.exception("Ошибка в order timeout worker")
@@ -99,7 +127,7 @@ async def _order_timeout_worker() -> None:
 
 async def _fiscal_retry_worker() -> None:
     """Фоновая задача: повторная фискализация неудачных чеков (54-ФЗ)."""
-    from payments.fiscal import fiscalize_order
+    from payments.fiscal import fiscalize_order, refund_order
     import json as json_module
 
     await asyncio.sleep(FISCAL_INITIAL_DELAY_SECONDS)
@@ -145,12 +173,25 @@ async def _fiscal_retry_worker() -> None:
 
                     try:
                         payload = json_module.loads(fq.payload_json)
-                        result = await fiscalize_order(
-                            order_id=fq.order_id,
-                            order_number=fq.order_number,
-                            items=payload["items"],
-                            total_amount=payload["total_amount"],
-                        )
+
+                        if fq.operation == "sell_refund":
+                            # Чек возврата — другая функция АТОЛ API
+                            result = await refund_order(
+                                order_id=fq.order_id,
+                                order_number=fq.order_number,
+                                items=payload["items"],
+                                total_amount=payload["total_amount"],
+                            )
+                        else:
+                            # Чек продажи: prepayment (Phase 1) или full_payment (Phase 2)
+                            pm = "prepayment" if fq.operation == "sell" else "full_payment"
+                            result = await fiscalize_order(
+                                order_id=fq.order_id,
+                                order_number=fq.order_number,
+                                items=payload["items"],
+                                total_amount=payload["total_amount"],
+                                payment_method=pm,
+                            )
 
                         if result.success and result.uuid:
                             fq.status = "done"
@@ -158,7 +199,10 @@ async def _fiscal_retry_worker() -> None:
                             fq.completed_at = database.now_utc()
                             order = session.get(Order, fq.order_id)
                             if order:
-                                order.fiscal_uuid = result.uuid
+                                if fq.operation == "sell":
+                                    order.fiscal_prepayment_uuid = result.uuid
+                                else:
+                                    order.fiscal_uuid = result.uuid
                             logging.info(
                                 "Fiscal retry: чек создан для заказа %d (попытка %d)",
                                 fq.order_id, fq.attempts,
@@ -166,7 +210,7 @@ async def _fiscal_retry_worker() -> None:
                         else:
                             fq.status = "pending"
                             fq.last_error = str(result.error)[:500] if result.error else "Unknown error"
-                            backoff_minutes = min(fq.attempts * 5, 120)
+                            backoff_minutes = min(5 * 2 ** (fq.attempts - 1), 120)
                             fq.next_retry_at = database.now_utc() + timedelta(minutes=backoff_minutes)
                             logging.warning(
                                 "Fiscal retry: ошибка для заказа %d (попытка %d): %s",
@@ -175,7 +219,7 @@ async def _fiscal_retry_worker() -> None:
                     except Exception as exc:
                         fq.status = "pending"
                         fq.last_error = str(exc)[:500]
-                        backoff_minutes = min(fq.attempts * 5, 120)
+                        backoff_minutes = min(5 * 2 ** (fq.attempts - 1), 120)
                         fq.next_retry_at = database.now_utc() + timedelta(minutes=backoff_minutes)
                         logging.exception("Fiscal retry: exception for order %d", fq.order_id)
 

@@ -168,7 +168,12 @@ def initialize_database() -> None:
 
 
 def next_public_order_number(session: Session) -> int:
-    current = session.scalar(select(func.max(Order.public_order_number)))
+    """Атомарная генерация номера заказа с блокировкой строки."""
+    # FOR UPDATE блокирует чтение MAX пока транзакция не завершится,
+    # предотвращая дубликаты при concurrent requests
+    current = session.scalar(
+        select(func.max(Order.public_order_number)).with_for_update()
+    )
     if current is None:
         return 4648
     next_num = current + 1

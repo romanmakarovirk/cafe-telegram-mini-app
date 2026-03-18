@@ -2443,10 +2443,10 @@
                   <strong>№${esc(String(order.public_order_number))}</strong>
                   <span>${dateStr}</span>
                 </div>
-                <div class="history-items">${esc(itemsStr)}</div>
+                <div class="history-items">${itemsStr}</div>
                 <div style="display:flex;justify-content:space-between;align-items:center">
                   <span style="font-weight:700;color:#1c513d">${formatPrice(order.total)}</span>
-                  <button class="history-repeat-btn" type="button" data-repeat-items='${esc(JSON.stringify(order.items))}'>🔁 Повторить</button>
+                  <button class="history-repeat-btn" type="button" data-repeat-items="${esc(JSON.stringify(order.items)).replace(/'/g, '&#39;')}">🔁 Повторить</button>
                 </div>
               </div>`;
             }).join("");

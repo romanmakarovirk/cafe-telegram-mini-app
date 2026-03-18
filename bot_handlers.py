@@ -66,18 +66,28 @@ async def notify_cashier_about_paid_order(order_id: int) -> None:
 
     with database.db_session() as session:
         order = database.fetch_order(session, order_id)
-        try:
-            sent_message = await bot_setup.bot.send_message(
-                chat_id=bot_setup.ADMIN_CHAT_ID,
-                text=format_order_for_cashier(order),
-                reply_markup=build_cashier_keyboard(order.id, order.status),
-            )
-        except Exception:
-            logging.exception("Failed to notify cashier about order %s", order.public_order_number)
-            return
-        order.cashier_message_id = sent_message.message_id
-        order.updated_at = database.now_utc()
-        session.commit()
+        cashier_text = format_order_for_cashier(order)
+        cashier_keyboard = build_cashier_keyboard(order.id, order.status)
+        notify_order_id = order.id
+        notify_order_number = order.public_order_number
+
+    # Telegram API вызов ВНЕ db_session (не держим DB connection)
+    try:
+        sent_message = await bot_setup.bot.send_message(
+            chat_id=bot_setup.ADMIN_CHAT_ID,
+            text=cashier_text,
+            reply_markup=cashier_keyboard,
+        )
+    except Exception:
+        logging.exception("Failed to notify cashier about order %s", notify_order_number)
+        return
+
+    with database.db_session() as session:
+        order = session.get(Order, notify_order_id)
+        if order:
+            order.cashier_message_id = sent_message.message_id
+            order.updated_at = database.now_utc()
+            session.commit()
 
 
 # ── Bot configuration ─────────────────────────────────────────────────────
@@ -132,7 +142,7 @@ async def handle_start(message: Message) -> None:
 async def handle_admin(message: Message) -> None:
     chat_id = message.chat.id
 
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         logging.warning("Unauthorized /admin attempt from chat_id=%d", chat_id)
         await message.answer("Доступ запрещён. Обратитесь к владельцу бота.")
         return
@@ -151,10 +161,52 @@ VALID_STATUS_TRANSITIONS: dict[str, list[str]] = {
 }
 
 
+def _enqueue_phase2_retry(
+    order_id: int, order_number: int,
+    fiscal_items: list[dict], total_amount: int,
+) -> None:
+    """Enqueue Phase 2 (full_payment) fiscal receipt for retry."""
+    import json as json_module
+    try:
+        with database.db_session() as fq_session:
+            existing = fq_session.scalars(
+                select(FiscalQueue).where(
+                    FiscalQueue.order_id == order_id,
+                    FiscalQueue.operation == "sell_settlement",
+                    FiscalQueue.status.in_(["pending", "processing"]),
+                )
+            ).first()
+            if existing:
+                return
+            fq_session.add(FiscalQueue(
+                order_id=order_id,
+                order_number=order_number,
+                operation="sell_settlement",
+                payload_json=json_module.dumps({
+                    "items": fiscal_items,
+                    "total_amount": total_amount,
+                }),
+                status="pending",
+                attempts=1,
+                max_attempts=10,
+                created_at=database.now_utc(),
+                next_retry_at=database.now_utc() + timedelta(minutes=5),
+            ))
+            fq_session.commit()
+        logging.info("Phase 2 fiscal: order %d enqueued for retry", order_id)
+    except Exception:
+        logging.exception("Failed to enqueue Phase 2 fiscal for order %d", order_id)
+
+
 @bot_setup.router.callback_query(F.data.startswith("order:"))
 async def handle_order_status_change(callback: CallbackQuery) -> None:
     if callback.data is None or callback.message is None:
         await callback.answer("Некорректные данные.")
+        return
+
+    chat_id = callback.message.chat.id
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
+        await callback.answer("Нет прав.")
         return
 
     try:
@@ -165,7 +217,13 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
         return
 
     with database.db_session() as session:
-        order = database.fetch_order(session, order_id)
+        order = session.scalars(
+            select(Order).where(Order.id == order_id).with_for_update()
+        ).first()
+        if order is None:
+            await callback.answer("Заказ не найден.")
+            return
+        _ = order.items  # eager load
 
         allowed = VALID_STATUS_TRANSITIONS.get(order.status, [])
         if action not in allowed:
@@ -177,7 +235,6 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             order.updated_at = database.now_utc()
             session.commit()
             session.refresh(order)
-            _ = order.items
             await notify_customer(
                 order,
                 f"Заказ №{order.public_order_number} передан на кухню. Сейчас его готовят.",
@@ -192,9 +249,47 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
         if action == "ready":
             order.status = "ready"
             order.updated_at = database.now_utc()
+
+            # Phase 2 fiscal receipt: full settlement (54-FZ two-phase)
+            import json as json_module
+            fiscal_items = [
+                {
+                    "name_snapshot": item.name_snapshot,
+                    "price_snapshot": item.price_snapshot,
+                    "quantity": item.quantity,
+                }
+                for item in order.items
+            ]
+            order_id_ready = order.id
+            order_number_ready = order.public_order_number
+            total_amount_ready = order.total_amount
+            has_phase1 = bool(order.fiscal_prepayment_uuid)
+
+            # Создаём FiscalQueue В ТОЙ ЖЕ транзакции что status="ready"
+            # Гарантия 54-ФЗ: если сервер упадёт после commit, retry worker подхватит
+            fiscal_safety_id = None
+            if has_phase1:
+                fiscal_safety_record = FiscalQueue(
+                    order_id=order_id_ready,
+                    order_number=order_number_ready,
+                    operation="sell_settlement",
+                    payload_json=json_module.dumps({
+                        "items": fiscal_items,
+                        "total_amount": total_amount_ready,
+                    }),
+                    status="pending",
+                    attempts=0,
+                    max_attempts=10,
+                    created_at=database.now_utc(),
+                    next_retry_at=database.now_utc() + timedelta(minutes=5),
+                )
+                session.add(fiscal_safety_record)
+
             session.commit()
             session.refresh(order)
-            _ = order.items
+            if has_phase1 and fiscal_safety_record:
+                fiscal_safety_id = fiscal_safety_record.id
+
             await notify_customer(
                 order,
                 f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!",
@@ -202,41 +297,54 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
             await callback.answer("🟢 Готов!")
 
-            # Phase 2 fiscal receipt: full settlement (54-FZ two-phase)
-            try:
-                from payments.fiscal import fiscalize_order
-                fiscal_items = [
-                    {
-                        "name_snapshot": item.name_snapshot,
-                        "price_snapshot": item.price_snapshot,
-                        "quantity": item.quantity,
-                    }
-                    for item in order.items
-                ]
-                fiscal_result = await fiscalize_order(
-                    order_id=order.id,
-                    order_number=order.public_order_number,
-                    items=fiscal_items,
-                    total_amount=order.total_amount,
-                    payment_method="full_payment",
+            if not has_phase1:
+                logging.warning(
+                    "Phase 2 fiscal: Phase 1 (prepayment) not found for order %d. "
+                    "Skipping full_payment receipt.",
+                    order_id_ready,
                 )
-                if fiscal_result.success and fiscal_result.uuid:
-                    with database.db_session() as fs:
-                        o = fs.get(Order, order.id)
-                        if o:
-                            o.fiscal_uuid = fiscal_result.uuid
+                await alert_admin(
+                    f"Заказ #{order_number_ready}: Phase 1 чек (prepayment) отсутствует. "
+                    f"Phase 2 чек (full_payment) не создан. Проверьте fiscal_queue!"
+                )
+            else:
+                # Пробуем онлайн-фискализацию; FiscalQueue уже создана (гарантия 54-ФЗ)
+                try:
+                    from payments.fiscal import fiscalize_order
+                    fiscal_result = await fiscalize_order(
+                        order_id=order_id_ready,
+                        order_number=order_number_ready,
+                        items=fiscal_items,
+                        total_amount=total_amount_ready,
+                        payment_method="full_payment",
+                    )
+                    if fiscal_result.success and fiscal_result.uuid:
+                        with database.db_session() as fs:
+                            o = fs.get(Order, order_id_ready)
+                            if o:
+                                o.fiscal_uuid = fiscal_result.uuid
+                            # Помечаем FiscalQueue как выполненную
+                            if fiscal_safety_id:
+                                fq = fs.get(FiscalQueue, fiscal_safety_id)
+                                if fq:
+                                    fq.status = "done"
+                                    fq.fiscal_uuid = fiscal_result.uuid
+                                    fq.completed_at = database.now_utc()
                             fs.commit()
-                    logging.info(
-                        "Phase 2 fiscal receipt for order %d, uuid=%s",
-                        order.id, fiscal_result.uuid,
+                        logging.info(
+                            "Phase 2 fiscal receipt for order %d, uuid=%s",
+                            order_id_ready, fiscal_result.uuid,
+                        )
+                    else:
+                        logging.error(
+                            "Phase 2 fiscal failed for order %d: %s — retry worker подхватит",
+                            order_id_ready, fiscal_result.error,
+                        )
+                except Exception:
+                    logging.exception(
+                        "Phase 2 fiscalization error for order %d — retry worker подхватит",
+                        order_id_ready,
                     )
-                else:
-                    logging.error(
-                        "Phase 2 fiscal failed for order %d: %s",
-                        order.id, fiscal_result.error,
-                    )
-            except Exception:
-                logging.exception("Phase 2 fiscalization error for order %d", order.id)
             return
 
     await callback.answer("Неизвестное действие.")
@@ -246,7 +354,7 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
 async def handle_stop(message: Message) -> None:
     """Быстрое отключение блюда: /stop Плов"""
     chat_id = message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await message.answer("Доступ запрещён.")
         return
 
@@ -320,7 +428,7 @@ async def handle_stop(message: Message) -> None:
 async def handle_stoplist(message: Message) -> None:
     """Показать текущий стоп-лист."""
     chat_id = message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await message.answer("Доступ запрещён.")
         return
 
@@ -357,7 +465,7 @@ async def handle_stoplist(message: Message) -> None:
 async def handle_stats(message: Message) -> None:
     """Статистика продаж."""
     chat_id = message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await message.answer("Доступ запрещён.")
         return
 
@@ -469,7 +577,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
         return
 
     chat_id = callback.message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await callback.answer("Доступ запрещён.")
         return
 
@@ -598,7 +706,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
 async def handle_pause(message: Message) -> None:
     """Пауза приёма заказов: /pause 30 — пауза на 30 мин, /pause — снять."""
     chat_id = message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await message.answer("Доступ запрещён.")
         return
 
@@ -636,7 +744,7 @@ async def handle_pause(message: Message) -> None:
 async def handle_refund(message: Message) -> None:
     """Возврат: /refund <номер_заказа>"""
     chat_id = message.chat.id
-    if ALLOWED_ADMIN_IDS and chat_id not in ALLOWED_ADMIN_IDS:
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
         await message.answer("Доступ запрещён.")
         return
 
@@ -652,9 +760,12 @@ async def handle_refund(message: Message) -> None:
         await message.answer("Номер заказа должен быть числом.")
         return
 
+    # 1. Захватить блокировку, проверить статус, подготовить данные для рефанда
     with database.db_session() as session:
-        order = session.query(Order).filter(
-            Order.public_order_number == order_number
+        order = session.scalars(
+            select(Order).where(
+                Order.public_order_number == order_number
+            ).with_for_update()
         ).first()
 
         if not order:
@@ -668,28 +779,82 @@ async def handle_refund(message: Message) -> None:
             )
             return
 
-        order.payment_status = "refunded"
-        order.status = "cancelled"
+        # Сохраняем данные и помечаем refund_pending ДО сетевого вызова
+        gateway_oid = order.gateway_order_id
+        refund_amount = order.total_amount
+        refund_order_id = order.id
+        refund_order_number = order.public_order_number
+        refund_user_id = order.telegram_user_id
+        _ = order.items  # eager load
+        import json as json_module
+        fiscal_items = [
+            {
+                "name_snapshot": item.name_snapshot,
+                "price_snapshot": item.price_snapshot,
+                "quantity": item.quantity,
+            }
+            for item in order.items
+        ]
+
+        order.payment_status = "refund_pending"
         order.updated_at = database.now_utc()
-        session.commit()
+        session.commit()  # Освобождаем FOR UPDATE lock
 
-        await notify_customer(
-            order,
-            f"💸 Возврат средств по заказу №{order.public_order_number}. "
-            f"Сумма {database.rub(order.total_amount)} будет возвращена.",
-        )
+    # 2. Возврат денег через СБП (вне блокировки — async I/O)
+    if gateway_oid:
+        from payments.sbp import refund_sbp_payment
+        refund_result = await refund_sbp_payment(gateway_oid, refund_amount)
+        if not refund_result.success:
+            # Откатываем статус обратно
+            with database.db_session() as session:
+                o = session.get(Order, refund_order_id)
+                if o and o.payment_status == "refund_pending":
+                    o.payment_status = "paid"
+                    o.updated_at = database.now_utc()
+                    session.commit()
+            await message.answer(
+                f"Ошибка возврата СБП: {refund_result.error_message}\n"
+                f"Заказ №{order_number} НЕ возвращён. Обратитесь в банк."
+            )
+            return
 
-        fiscal_refund = FiscalQueue(
-            order_id=order.id,
-            operation="sell_refund",
-            status="pending",
-        )
-        session.add(fiscal_refund)
-        session.commit()
+    # 3. Обновить статусы и создать фискальный чек возврата
+    with database.db_session() as session:
+        order = session.get(Order, refund_order_id)
+        if order:
+            order.payment_status = "refunded"
+            order.status = "cancelled"
+            order.updated_at = database.now_utc()
+
+            fiscal_payload = json_module.dumps({
+                "items": fiscal_items,
+                "total_amount": refund_amount,
+            })
+
+            fiscal_refund = FiscalQueue(
+                order_id=refund_order_id,
+                order_number=refund_order_number,
+                operation="sell_refund",
+                payload_json=fiscal_payload,
+                status="pending",
+                attempts=0,
+                max_attempts=10,
+                created_at=database.now_utc(),
+                next_retry_at=database.now_utc(),
+            )
+            session.add(fiscal_refund)
+            session.commit()
+
+        if order:
+            await notify_customer(
+                order,
+                f"Возврат средств по заказу No{refund_order_number}. "
+                f"Сумма {database.rub(refund_amount)} будет возвращена.",
+            )
 
     await message.answer(
         f"✅ Возврат по заказу №{order_number} оформлен.\n"
-        f"Сумма: {database.rub(order.total_amount)}\n"
+        f"Сумма: {database.rub(refund_amount)}\n"
         f"Фискальный чек возврата поставлен в очередь."
     )
 
@@ -701,6 +866,11 @@ async def handle_prep_time(callback: CallbackQuery) -> None:
     """Кассир уточняет время готовности."""
     if callback.data is None or callback.message is None:
         await callback.answer("Ошибка.")
+        return
+
+    chat_id = callback.message.chat.id
+    if not ALLOWED_ADMIN_IDS or chat_id not in ALLOWED_ADMIN_IDS:
+        await callback.answer("Нет прав.")
         return
 
     try:
