@@ -58,6 +58,11 @@ async def _stoplist_auto_enable_worker() -> None:
 
                 if expired:
                     session.commit()
+                    try:
+                        from routes import invalidate_menu_cache
+                        invalidate_menu_cache()
+                    except ImportError:
+                        pass
         except Exception:
             logging.exception("Ошибка в stoplist auto-enable worker")
 
@@ -103,6 +108,8 @@ async def _order_timeout_worker() -> None:
                     session.commit()
 
                 # Cleanup зависших маркеров "creating" (crash при создании платежа)
+                # Atomic UPDATE — не перезапишет gateway_order_id, если он
+                # уже изменился между SELECT и UPDATE (race condition protection)
                 creating_cutoff = database.now_utc() - timedelta(minutes=5)
                 stuck_creating = session.scalars(
                     select(Order).where(
@@ -110,15 +117,47 @@ async def _order_timeout_worker() -> None:
                         Order.updated_at < creating_cutoff,
                     )
                 ).all()
-                for order in stuck_creating:
-                    order.gateway_order_id = None
-                    order.updated_at = database.now_utc()
-                    logging.warning(
-                        "Timeout worker: сброс зависшего маркера 'creating' для заказа №%d",
+                if stuck_creating:
+                    for order in stuck_creating:
+                        logging.warning(
+                            "Timeout worker: сброс зависшего маркера 'creating' для заказа №%d",
+                            order.public_order_number,
+                        )
+                    session.execute(
+                        update(Order).where(
+                            Order.gateway_order_id == "creating",
+                            Order.updated_at < creating_cutoff,
+                        ).values(
+                            gateway_order_id=None,
+                            updated_at=database.now_utc(),
+                        )
+                    )
+                    session.commit()
+
+                # Обнаружение застрявших refund_pending заказов
+                # (crash между commit и SBP refund call)
+                refund_stuck_cutoff = database.now_utc() - timedelta(minutes=10)
+                stuck_refunds = session.scalars(
+                    select(Order).where(
+                        Order.payment_status == "refund_pending",
+                        Order.updated_at < refund_stuck_cutoff,
+                    )
+                ).all()
+                for order in stuck_refunds:
+                    logging.critical(
+                        "Stuck refund_pending: заказ №%d завис >10 мин, требуется ручной возврат",
                         order.public_order_number,
                     )
-                if stuck_creating:
-                    session.commit()
+                if stuck_refunds:
+                    from bot_handlers import alert_admin
+                    order_nums = ", ".join(
+                        f"#{o.public_order_number}" for o in stuck_refunds
+                    )
+                    await alert_admin(
+                        f"ЗАСТРЯВШИЕ ВОЗВРАТЫ: заказы {order_nums} "
+                        f"в статусе refund_pending более 10 минут. "
+                        f"Требуется ручной возврат через личный кабинет банка!"
+                    )
         except Exception:
             logging.exception("Ошибка в order timeout worker")
 
@@ -156,6 +195,7 @@ async def _fiscal_retry_worker() -> None:
                         FiscalQueue.next_retry_at <= database.now_utc(),
                         FiscalQueue.attempts < FiscalQueue.max_attempts,
                     ).order_by(FiscalQueue.next_retry_at).limit(FISCAL_RETRY_BATCH_SIZE)
+                    .with_for_update(skip_locked=True)
                 ).all()
 
                 for fq in pending:
@@ -240,3 +280,81 @@ async def _fiscal_retry_worker() -> None:
             logging.exception("Ошибка в fiscal retry worker")
 
         await asyncio.sleep(120)
+
+
+async def _sbp_payment_polling_worker() -> None:
+    """Фоновая задача: опрос статуса pending SBP-платежей.
+
+    Сбербанк делает только 3 попытки доставить callback (интервал 60 сек).
+    Если callback потерян — этот worker поймает оплату через getOrderStatusExtended.
+    """
+    from payments.sbp import check_sbp_payment
+
+    await asyncio.sleep(30)  # Ждём старт приложения
+
+    while True:
+        try:
+            with database.db_session() as session:
+                cutoff_recent = database.now_utc() - timedelta(seconds=30)
+                cutoff_old = database.now_utc() - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES)
+                pending_orders = session.scalars(
+                    select(Order).where(
+                        Order.payment_status == "pending",
+                        Order.gateway_order_id.isnot(None),
+                        Order.gateway_order_id != "creating",
+                        Order.updated_at < cutoff_recent,
+                        Order.created_at > cutoff_old,
+                    ).limit(10)
+                ).all()
+
+                orders_to_check = [
+                    (o.id, o.gateway_order_id, o.total_amount)
+                    for o in pending_orders
+                ]
+
+            for order_id, gateway_order_id, total_amount in orders_to_check:
+                try:
+                    result = await check_sbp_payment(gateway_order_id)
+                    if not result.success:
+                        continue
+
+                    if result.is_paid:
+                        expected_kopecks = total_amount * 100
+                        if result.amount is not None and result.amount != expected_kopecks:
+                            with database.db_session() as session:
+                                order = session.scalars(
+                                    select(Order).where(
+                                        Order.id == order_id
+                                    ).with_for_update()
+                                ).first()
+                                if order and order.payment_status == "pending":
+                                    order.payment_status = "amount_mismatch"
+                                    order.updated_at = database.now_utc()
+                                    session.commit()
+                                    logging.critical(
+                                        "SBP polling: AMOUNT MISMATCH order %d expected %d got %d",
+                                        order_id, expected_kopecks, result.amount,
+                                    )
+                                    from bot_handlers import alert_admin
+                                    await alert_admin(
+                                        f"AMOUNT MISMATCH (polling): заказ #{order_id}, "
+                                        f"ожидали {expected_kopecks} коп, получили {result.amount} коп"
+                                    )
+                                else:
+                                    session.commit()
+                            continue
+
+                        from routes import _process_paid_order
+                        await _process_paid_order(order_id)
+                        logging.info(
+                            "SBP polling: заказ %d оплачен (callback не пришёл, обнаружен polling)",
+                            order_id,
+                        )
+
+                except Exception:
+                    logging.exception("SBP polling: ошибка проверки заказа %d", order_id)
+
+        except Exception:
+            logging.exception("Ошибка в SBP payment polling worker")
+
+        await asyncio.sleep(15)

@@ -51,6 +51,13 @@ def serialize_menu_item(item: MenuItem) -> dict[str, Any]:
     }
 
 
+def _receipt_url(uuid: str | None) -> str | None:
+    """Build OFD receipt URL from ATOL fiscal UUID."""
+    if not uuid:
+        return None
+    return f"https://receipt.atol.ru/{uuid}"
+
+
 def serialize_order(order: Order) -> dict[str, Any]:
     return {
         "order_id": order.id,
@@ -64,6 +71,7 @@ def serialize_order(order: Order) -> dict[str, Any]:
         "total": order.total_amount,
         "gateway_order_id": order.gateway_order_id,
         "accounting_synced": order.accounting_synced,
+        "receipt_url": _receipt_url(order.fiscal_prepayment_uuid),
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
         "items": [

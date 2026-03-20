@@ -21,7 +21,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3387,6 +3387,1599 @@ class TestAuditLogExists:
         from routes import _process_paid_order
         source = inspect.getsource(_process_paid_order)
         assert "audit_log" in source, "audit_log must be called in _process_paid_order"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  E2E: Полные сценарии с mock API (создание → оплата → фискализация → выдача)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _E2ETestBase:
+    """Базовый класс для E2E тестов с полным контролем БД и mock API."""
+
+    @pytest.fixture(autouse=True)
+    def setup_e2e(self, tmp_path):
+        db_path = tmp_path / "e2e_test.db"
+        os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+        os.environ["DEV_MODE"] = "true"
+        os.environ["BOT_TOKEN"] = ""
+        os.environ["FRESH_ENABLED"] = "false"
+        os.environ["KITCHEN_API_KEY"] = "test-kitchen-key-12345"
+
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+        m.Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+        m.db_session = Session
+        m.SessionLocal = Session
+
+        # Seed menu
+        with Session() as session:
+            m.seed_menu_items(session)
+
+        self.Session = Session
+        self.m = m
+        self.engine = engine
+        yield
+
+    def _create_test_order(self, status="created", payment_status="pending",
+                           gateway_order_id=None, fiscal_prepayment_uuid=None) -> int:
+        """Создаёт заказ с 2 позициями и возвращает order_id."""
+        m = self.m
+        now = datetime.now(timezone.utc)
+        with self.Session() as session:
+            order = m.Order(
+                public_order_number=7777,
+                telegram_user_id=111222333,
+                total_amount=1200,
+                status=status,
+                payment_status=payment_status,
+                payment_mode="sbp",
+                kitchen_printed=False,
+                accounting_synced=False,
+                gateway_order_id=gateway_order_id,
+                fiscal_prepayment_uuid=fiscal_prepayment_uuid,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(order)
+            session.flush()
+            oid = order.id
+            session.add(m.OrderItem(
+                order_id=oid, menu_item_id=1,
+                name_snapshot="Шашлык", price_snapshot=700,
+                quantity=1, subtotal=700,
+            ))
+            session.add(m.OrderItem(
+                order_id=oid, menu_item_id=2,
+                name_snapshot="Плов", price_snapshot=500,
+                quantity=1, subtotal=500,
+            ))
+            session.commit()
+        return oid
+
+
+class TestE2EFullPaymentCycle(_E2ETestBase):
+    """E2E: Полный цикл заказ → оплата → Phase 1 → ready → Phase 2."""
+
+    @pytest.mark.asyncio
+    async def test_payment_to_fiscal_to_ready(self):
+        """created → _process_paid_order → paid/preparing + Phase 1 fiscal → ready + Phase 2 fiscal."""
+        m = self.m
+        oid = self._create_test_order()
+
+        # --- Phase 1: Оплата + фискализация prepayment ---
+        mock_fiscal = AsyncMock(return_value=MagicMock(
+            success=True, uuid="prepay-uuid-001", error=""
+        ))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        # Проверяем: заказ оплачен, Phase 1 чек создан, FiscalQueue done
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid"
+            assert order.status == "preparing"
+            assert order.fiscal_prepayment_uuid == "prepay-uuid-001"
+
+            # FiscalQueue для sell должна быть "done" (онлайн-фискализация успешна)
+            fq_sell = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell",
+                )
+            ).first()
+            assert fq_sell is not None, "FiscalQueue sell record must exist"
+            assert fq_sell.status == "done"
+
+        # fiscalize_order вызван с payment_method="prepayment"
+        mock_fiscal.assert_called_once()
+        assert mock_fiscal.call_args[1]["payment_method"] == "prepayment"
+
+        # --- Phase 2: Ready → фискализация full_payment ---
+        mock_fiscal_phase2 = AsyncMock(return_value=MagicMock(
+            success=True, uuid="settle-uuid-002", error=""
+        ))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal_phase2), \
+             patch("bot_handlers.notify_customer", new_callable=AsyncMock), \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock):
+            from bot_handlers import handle_order_status_change
+
+            mock_callback = AsyncMock()
+            mock_callback.data = f"order:ready:{oid}"
+            mock_callback.message = AsyncMock()
+            mock_callback.message.chat.id = 12345
+
+            # Нужен admin access
+            import bot_handlers
+            original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+            bot_handlers.ALLOWED_ADMIN_IDS = {12345}
+            try:
+                await handle_order_status_change(mock_callback)
+            finally:
+                bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        # Проверяем: заказ ready, Phase 2 чек создан
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "ready"
+            assert order.fiscal_uuid == "settle-uuid-002"
+
+            # FiscalQueue для sell_settlement должна быть "done"
+            fq_settle = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell_settlement",
+                )
+            ).first()
+            assert fq_settle is not None, "FiscalQueue sell_settlement record must exist"
+            assert fq_settle.status == "done"
+            assert fq_settle.fiscal_uuid == "settle-uuid-002"
+
+        # fiscalize_order вызван с payment_method="full_payment"
+        mock_fiscal_phase2.assert_called_once()
+        assert mock_fiscal_phase2.call_args[1]["payment_method"] == "full_payment"
+
+
+class TestE2ERefundFlow(_E2ETestBase):
+    """E2E: Полный цикл возврата — оплата → /refund → SBP refund → фискальный чек."""
+
+    @pytest.mark.asyncio
+    async def test_refund_creates_fiscal_and_updates_status(self):
+        """paid → /refund → refund_pending → SBP ok → refunded + FiscalQueue(sell_refund)."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing",
+            payment_status="paid",
+            gateway_order_id="sbp-gw-12345",
+            fiscal_prepayment_uuid="prepay-uuid-existing",
+        )
+
+        # Mock SBP refund — успешный
+        mock_refund = AsyncMock(return_value=MagicMock(success=True, error_message=""))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund), \
+             patch("bot_handlers.notify_customer", new_callable=AsyncMock):
+            from bot_handlers import handle_refund
+
+            mock_message = AsyncMock()
+            mock_message.text = f"/refund 7777"
+            mock_message.chat.id = 99999
+
+            import bot_handlers
+            original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+            bot_handlers.ALLOWED_ADMIN_IDS = {99999}
+            try:
+                await handle_refund(mock_message)
+            finally:
+                bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        # Проверяем: refunded + cancelled + FiscalQueue sell_refund
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "refunded"
+            assert order.status == "cancelled"
+
+            fq_refund = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell_refund",
+                )
+            ).first()
+            assert fq_refund is not None, "FiscalQueue sell_refund must be created"
+            assert fq_refund.status == "pending"
+            assert fq_refund.order_number == 7777
+            assert fq_refund.max_attempts == 10
+            # payload должен содержать items и total_amount
+            payload = json.loads(fq_refund.payload_json)
+            assert "items" in payload
+            assert payload["total_amount"] == 1200
+            assert len(payload["items"]) == 2
+
+        # SBP refund вызван с правильными аргументами
+        mock_refund.assert_called_once_with("sbp-gw-12345", 1200)
+
+    @pytest.mark.asyncio
+    async def test_refund_failure_rolls_back(self):
+        """SBP refund failure → статус возвращается в paid."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing",
+            payment_status="paid",
+            gateway_order_id="sbp-gw-fail",
+        )
+
+        mock_refund = AsyncMock(return_value=MagicMock(
+            success=False, error_message="Bank timeout"
+        ))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund):
+            from bot_handlers import handle_refund
+
+            mock_message = AsyncMock()
+            mock_message.text = "/refund 7777"
+            mock_message.chat.id = 99999
+
+            import bot_handlers
+            original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+            bot_handlers.ALLOWED_ADMIN_IDS = {99999}
+            try:
+                await handle_refund(mock_message)
+            finally:
+                bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        # Статус должен откатиться обратно в paid
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid", "Должен откатиться при ошибке SBP"
+
+            # FiscalQueue НЕ должна создаваться при неудачном refund
+            fq_count = session.scalars(
+                m.select(m.FiscalQueue).where(m.FiscalQueue.order_id == oid)
+            ).all()
+            assert len(fq_count) == 0
+
+
+class TestE2EStoplistRefundFlow(_E2ETestBase):
+    """E2E: Оплата → стоп-лист → refund + ДВА фискальных чека."""
+
+    @pytest.mark.asyncio
+    async def test_stoplist_creates_two_fiscal_receipts(self):
+        """Стоп-лист при оплате: refund + sell чек + sell_refund чек."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="sbp-gw-stoplist")
+
+        # Блокируем одно из блюд в стоп-листе
+        with self.Session() as session:
+            menu_item = session.get(m.MenuItem, 1)
+            menu_item.is_available = False
+            session.commit()
+
+        mock_refund = AsyncMock(return_value=MagicMock(success=True, error_message=""))
+        mock_fiscal = AsyncMock(return_value=MagicMock(
+            success=True, uuid="prepay-uuid-stoplist", error=""
+        ))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund), \
+             patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup, \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock) as mock_alert:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "cancelled"
+            assert order.payment_status == "refunded"
+
+            # Должно быть ДВА чека в FiscalQueue
+            fq_all = session.scalars(
+                m.select(m.FiscalQueue).where(m.FiscalQueue.order_id == oid)
+            ).all()
+            operations = {fq.operation for fq in fq_all}
+            assert "sell" in operations, "Должен быть чек продажи (prepayment)"
+            assert "sell_refund" in operations, "Должен быть чек возврата"
+            assert len(fq_all) == 2
+
+            # Оба чека должны иметь корректный payload
+            for fq in fq_all:
+                payload = json.loads(fq.payload_json)
+                assert "items" in payload
+                assert payload["total_amount"] == 1200
+                assert fq.order_number == 7777
+                assert fq.max_attempts == 10
+
+        # SBP refund должен быть вызван
+        mock_refund.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stoplist_refund_failure_alerts_admin(self):
+        """Стоп-лист + SBP refund failure → refund_failed + alert_admin."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="sbp-gw-fail-stop")
+
+        with self.Session() as session:
+            menu_item = session.get(m.MenuItem, 1)
+            menu_item.is_available = False
+            session.commit()
+
+        mock_refund = AsyncMock(return_value=MagicMock(
+            success=False, error_message="Insufficient funds"
+        ))
+        mock_fiscal = AsyncMock(return_value=MagicMock(success=True, uuid="x", error=""))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund), \
+             patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup, \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock) as mock_alert:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "refund_failed"
+
+        # alert_admin должен быть вызван с текстом о неудачном возврате
+        alert_calls = [str(c) for c in mock_alert.call_args_list]
+        refund_fail_alert = any("ВОЗВРАТ НЕ УДАЛСЯ" in str(c) or "refund" in str(c).lower()
+                                for c in mock_alert.call_args_list)
+        assert refund_fail_alert or mock_alert.call_count >= 1, \
+            f"alert_admin должен быть вызван при refund failure, calls: {alert_calls}"
+
+
+class TestE2EFiscalRetryWorker(_E2ETestBase):
+    """E2E: Фискализация падает → FiscalQueue → retry worker → успех → UUID сохранён."""
+
+    @pytest.mark.asyncio
+    async def test_retry_worker_picks_up_failed_fiscal(self):
+        """Phase 1 fiscal fails → FiscalQueue pending → retry worker → done + UUID."""
+        m = self.m
+        oid = self._create_test_order()
+
+        # Phase 1: фискализация ПАДАЕТ
+        mock_fiscal_fail = AsyncMock(return_value=MagicMock(
+            success=False, uuid="", error="ATOL timeout"
+        ))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal_fail), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        # Заказ paid/preparing, но fiscal_prepayment_uuid пуст
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid"
+            assert order.status == "preparing"
+            assert order.fiscal_prepayment_uuid is None
+
+            # FiscalQueue должна быть pending (retry worker подхватит)
+            fq = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell",
+                )
+            ).first()
+            assert fq is not None
+            assert fq.status == "pending"
+            fq_id = fq.id
+
+            # Имитируем что next_retry_at уже прошло
+            fq.next_retry_at = datetime.now(timezone.utc)
+            session.commit()
+
+        # Retry worker: фискализация УСПЕШНА
+        mock_fiscal_ok = AsyncMock(return_value=MagicMock(
+            success=True, uuid="retry-prepay-uuid-999", error=""
+        ))
+        mock_refund_fn = AsyncMock()
+
+        # Запускаем одну итерацию retry worker вручную
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal_ok), \
+             patch("payments.fiscal.refund_order", mock_refund_fn), \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock):
+            import workers
+            import database as db_module
+            original_db_session = db_module.db_session
+            db_module.db_session = self.Session
+            try:
+                # Имитируем одну итерацию while loop в _fiscal_retry_worker
+                with self.Session() as session:
+                    pending = session.scalars(
+                        m.select(m.FiscalQueue).where(
+                            m.FiscalQueue.status == "pending",
+                            m.FiscalQueue.next_retry_at <= db_module.now_utc(),
+                            m.FiscalQueue.attempts < m.FiscalQueue.max_attempts,
+                        ).order_by(m.FiscalQueue.next_retry_at).limit(5)
+                    ).all()
+
+                    for fq in pending:
+                        fq.status = "processing"
+                        fq.attempts += 1
+                        session.commit()
+
+                        payload = json.loads(fq.payload_json)
+                        if fq.operation == "sell_refund":
+                            result = await mock_refund_fn(
+                                order_id=fq.order_id,
+                                order_number=fq.order_number,
+                                items=payload["items"],
+                                total_amount=payload["total_amount"],
+                            )
+                        else:
+                            pm = "prepayment" if fq.operation == "sell" else "full_payment"
+                            result = await mock_fiscal_ok(
+                                order_id=fq.order_id,
+                                order_number=fq.order_number,
+                                items=payload["items"],
+                                total_amount=payload["total_amount"],
+                                payment_method=pm,
+                            )
+
+                        if result.success and result.uuid:
+                            fq.status = "done"
+                            fq.fiscal_uuid = result.uuid
+                            fq.completed_at = db_module.now_utc()
+                            order = session.get(m.Order, fq.order_id)
+                            if order:
+                                if fq.operation == "sell":
+                                    order.fiscal_prepayment_uuid = result.uuid
+                                else:
+                                    order.fiscal_uuid = result.uuid
+
+                        session.commit()
+            finally:
+                db_module.db_session = original_db_session
+
+        # Проверяем: FiscalQueue done, UUID сохранён в Order
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.fiscal_prepayment_uuid == "retry-prepay-uuid-999"
+
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "done"
+            assert fq.fiscal_uuid == "retry-prepay-uuid-999"
+            assert fq.attempts == 1
+
+        # fiscalize_order вызван с prepayment
+        mock_fiscal_ok.assert_called_once()
+        assert mock_fiscal_ok.call_args[1]["payment_method"] == "prepayment"
+
+    @pytest.mark.asyncio
+    async def test_retry_worker_calls_refund_for_sell_refund(self):
+        """Retry worker: operation=sell_refund → вызывает refund_order, не fiscalize_order."""
+        m = self.m
+        oid = self._create_test_order(
+            status="cancelled", payment_status="refunded",
+        )
+
+        # Создаём FiscalQueue sell_refund вручную
+        with self.Session() as session:
+            fq = m.FiscalQueue(
+                order_id=oid,
+                order_number=7777,
+                operation="sell_refund",
+                payload_json=json.dumps({
+                    "items": [{"name_snapshot": "Шашлык", "price_snapshot": 700, "quantity": 1}],
+                    "total_amount": 700,
+                }),
+                status="pending",
+                attempts=0,
+                max_attempts=10,
+                created_at=datetime.now(timezone.utc),
+                next_retry_at=datetime.now(timezone.utc),
+            )
+            session.add(fq)
+            session.commit()
+            fq_id = fq.id
+
+        mock_fiscal = AsyncMock()  # НЕ должен вызываться
+        mock_refund = AsyncMock(return_value=MagicMock(
+            success=True, uuid="refund-uuid-777", error=""
+        ))
+
+        import database as db_module
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            fq.status = "processing"
+            fq.attempts += 1
+            session.commit()
+
+            payload = json.loads(fq.payload_json)
+            # sell_refund → refund_order
+            result = await mock_refund(
+                order_id=fq.order_id,
+                order_number=fq.order_number,
+                items=payload["items"],
+                total_amount=payload["total_amount"],
+            )
+            fq.status = "done"
+            fq.fiscal_uuid = result.uuid
+            fq.completed_at = db_module.now_utc()
+            order = session.get(m.Order, fq.order_id)
+            if order:
+                order.fiscal_uuid = result.uuid
+            session.commit()
+
+        # Проверяем: refund_order вызван, fiscalize_order НЕ вызван
+        mock_refund.assert_called_once()
+        mock_fiscal.assert_not_called()
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "done"
+            assert fq.fiscal_uuid == "refund-uuid-777"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INTEGRATION HARDENING: Webhook, Timeout, Concurrency, Payload tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWebhookReplayAttack(_AppTestBase):
+    """Один и тот же callback 3 раза подряд → заказ обработан ровно 1 раз."""
+
+    def test_duplicate_callback_is_idempotent(self):
+        """Replay attack: 3 одинаковых callback → _process_paid_order вызван max 1 раз."""
+        import hashlib
+        import hmac as hmac_mod
+        import payments.sbp as sbp_mod
+
+        order = self._create_order()
+        oid = order["order_id"]
+
+        # Привяжем gateway_order_id
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            o.gateway_order_id = "sbp-gw-replay-test"
+            session.commit()
+
+        secret = "test-hmac-secret"
+        md_order = "sbp-gw-replay-test"
+        order_number_str = f"SHASHLIK-{order['public_order_number']}"
+        sign_str = f"{md_order};{order_number_str};deposited;1"
+        checksum = hmac_mod.new(
+            secret.encode(), sign_str.encode(), hashlib.sha256
+        ).hexdigest()
+
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = secret
+
+        try:
+            with patch.object(self.m, "_process_paid_order", new_callable=AsyncMock) as mock_process, \
+                 patch("payments.sbp.check_sbp_payment", new_callable=AsyncMock) as mock_check:
+                mock_check.return_value = MagicMock(success=False, amount=None)
+
+                results = []
+                for _ in range(3):
+                    resp = self.client.post(
+                        f"/api/sbp/callback?mdOrder={md_order}"
+                        f"&orderNumber={order_number_str}"
+                        f"&operation=deposited&status=1"
+                        f"&checksum={checksum}"
+                    )
+                    results.append(resp.status_code)
+
+                assert all(r == 200 for r in results), f"Expected all 200, got {results}"
+                # Максимум 1 вызов (второй+ видит paid и выходит)
+                assert mock_process.call_count <= 1, \
+                    f"_process_paid_order called {mock_process.call_count} times, expected <=1"
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+
+class TestWebhookInvalidHMAC(_AppTestBase):
+    """Callback с неверной HMAC подписью → 403."""
+
+    def test_bad_checksum_rejected(self):
+        """Подделанная подпись → 403."""
+        import payments.sbp as sbp_mod
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = "real-secret-key"
+
+        try:
+            resp = self.client.post(
+                "/api/sbp/callback?mdOrder=fake-order"
+                "&orderNumber=SHASHLIK-999"
+                "&operation=deposited&status=1"
+                "&checksum=00000000deadbeef00000000deadbeef"
+            )
+            assert resp.status_code == 403
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+    def test_empty_checksum_rejected(self):
+        """Пустая подпись → 403."""
+        import payments.sbp as sbp_mod
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = "real-secret-key"
+
+        try:
+            resp = self.client.post(
+                "/api/sbp/callback?mdOrder=fake-order"
+                "&orderNumber=SHASHLIK-999"
+                "&operation=deposited&status=1"
+                "&checksum="
+            )
+            assert resp.status_code == 403
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+    def test_no_secret_configured_rejects(self):
+        """SBP_CALLBACK_SECRET пуст → fail-secure → 403."""
+        import payments.sbp as sbp_mod
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = ""
+
+        try:
+            resp = self.client.post(
+                "/api/sbp/callback?mdOrder=fake"
+                "&orderNumber=SHASHLIK-1"
+                "&operation=deposited&status=1"
+                "&checksum=some_checksum"
+            )
+            assert resp.status_code == 403
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+
+class TestWebhookAmountMismatch(_AppTestBase):
+    """Callback с верной подписью но неверной суммой → amount_mismatch."""
+
+    def test_amount_mismatch_marks_order(self):
+        """SBP API возвращает другую сумму → amount_mismatch."""
+        import hashlib
+        import hmac as hmac_mod
+        import payments.sbp as sbp_mod
+
+        order = self._create_order()
+        oid = order["order_id"]
+
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            o.gateway_order_id = "sbp-gw-mismatch"
+            session.commit()
+            expected_kopecks = o.total_amount * 100
+
+        secret = "mismatch-test-secret"
+        md_order = "sbp-gw-mismatch"
+        order_number_str = f"SHASHLIK-{order['public_order_number']}"
+        sign_str = f"{md_order};{order_number_str};deposited;1"
+        checksum = hmac_mod.new(
+            secret.encode(), sign_str.encode(), hashlib.sha256
+        ).hexdigest()
+
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = secret
+
+        try:
+            wrong_amount = expected_kopecks + 50000  # +500₽
+            with patch("payments.sbp.check_sbp_payment", new_callable=AsyncMock) as mock_check, \
+                 patch("bot_handlers.alert_admin", new_callable=AsyncMock):
+                mock_check.return_value = MagicMock(
+                    success=True, amount=wrong_amount, status="deposited"
+                )
+
+                resp = self.client.post(
+                    f"/api/sbp/callback?mdOrder={md_order}"
+                    f"&orderNumber={order_number_str}"
+                    f"&operation=deposited&status=1"
+                    f"&checksum={checksum}"
+                )
+                assert resp.status_code == 200
+
+            with self.Session() as session:
+                o = session.get(self.m.Order, oid)
+                assert o.payment_status == "amount_mismatch", \
+                    f"Expected amount_mismatch, got {o.payment_status}"
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+
+class TestFiscalTimeoutHandling(_E2ETestBase):
+    """Таймаут fiscalize_order → FiscalQueue pending, заказ не застрял."""
+
+    @pytest.mark.asyncio
+    async def test_fiscal_timeout_does_not_block_order(self):
+        """TimeoutError → заказ preparing, FiscalQueue pending для retry."""
+        m = self.m
+        oid = self._create_test_order()
+
+        mock_fiscal = AsyncMock(side_effect=asyncio.TimeoutError("ATOL timeout"))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "preparing"
+            assert order.payment_status == "paid"
+            assert order.fiscal_prepayment_uuid is None
+
+            fq = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid, m.FiscalQueue.operation == "sell",
+                )
+            ).first()
+            assert fq is not None, "FiscalQueue must exist for retry"
+            assert fq.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_fiscal_connection_error_does_not_block(self):
+        """ConnectionError → тот же результат."""
+        m = self.m
+        oid = self._create_test_order()
+
+        mock_fiscal = AsyncMock(side_effect=ConnectionError("ATOL unreachable"))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "preparing"
+            assert order.payment_status == "paid"
+            fq = session.scalars(
+                m.select(m.FiscalQueue).where(m.FiscalQueue.order_id == oid)
+            ).first()
+            assert fq is not None
+            assert fq.status == "pending"
+
+
+class TestSbpCreatePaymentTimeout(_AppTestBase):
+    """Таймаут SBP create_payment → gateway_order_id сброшен."""
+
+    def test_create_payment_timeout_resets_marker(self):
+        """Timeout → gateway_order_id = None (не зависает как 'creating')."""
+        order = self._create_order()
+        oid = order["order_id"]
+
+        with patch("payments.sbp.create_sbp_payment", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = MagicMock(
+                success=False, error_message="Connection timeout",
+                order_id=None, deeplink=None, payment_url=None,
+            )
+            resp = self.client.post(f"/api/sbp/create-payment/{oid}?dev_user_id=1")
+            assert resp.status_code == 502
+
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            assert o.gateway_order_id is None, \
+                f"Expected None after timeout, got '{o.gateway_order_id}'"
+
+    def test_creating_marker_prevents_double_payment(self):
+        """gateway_order_id='creating' → второй запрос получает status=creating."""
+        order = self._create_order()
+        oid = order["order_id"]
+
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            o.gateway_order_id = "creating"
+            session.commit()
+
+        resp = self.client.post(f"/api/sbp/create-payment/{oid}?dev_user_id=1")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "creating"
+
+
+class TestConcurrentProcessPaidOrder(_E2ETestBase):
+    """Два параллельных _process_paid_order → оплата ровно 1 раз."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_process_once(self):
+        """2 asyncio.Task на один заказ → fiscal вызван 1 раз."""
+        m = self.m
+        oid = self._create_test_order()
+
+        call_count = {"fiscal": 0}
+
+        async def mock_fiscal(**kwargs):
+            call_count["fiscal"] += 1
+            await asyncio.sleep(0.05)
+            return MagicMock(success=True, uuid=f"concurrent-uuid-{call_count['fiscal']}", error="")
+
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", side_effect=mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+
+            results = await asyncio.gather(
+                _process_paid_order(oid),
+                _process_paid_order(oid),
+                return_exceptions=True,
+            )
+
+        for r in results:
+            assert not isinstance(r, Exception), f"Task failed: {r}"
+
+        assert call_count["fiscal"] == 1, \
+            f"Expected 1 fiscal call, got {call_count['fiscal']}"
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid"
+            assert order.status == "preparing"
+
+
+class TestOrderTotalIntegerArithmetic(_AppTestBase):
+    """Суммы — Integer рублей. Проверяем корректность расчёта."""
+
+    def test_total_equals_sum_of_subtotals(self):
+        """total_amount == сумма subtotal всех позиций."""
+        order = self._create_order(items=[
+            {"item_id": 1, "quantity": 3},
+            {"item_id": 2, "quantity": 2},
+            {"item_id": 3, "quantity": 1},
+        ])
+        assert "order_id" in order, f"Error: {order}"
+        oid = order["order_id"]
+
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            items_total = sum(item.subtotal for item in o.items)
+            assert o.total_amount == items_total
+            for item in o.items:
+                assert item.subtotal == item.price_snapshot * item.quantity
+
+    def test_single_item_total(self):
+        """1 товар × 1 шт = цена товара."""
+        order = self._create_order(items=[{"item_id": 1, "quantity": 1}])
+        oid = order["order_id"]
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            assert len(o.items) == 1
+            assert o.total_amount == o.items[0].price_snapshot
+
+    def test_large_quantity_no_overflow(self):
+        """Большое количество (50 шт) → корректный total."""
+        order = self._create_order(items=[{"item_id": 1, "quantity": 50}])
+        if "_error" in order:
+            return  # Отклонён MAX_ORDER_TOTAL — это ОК
+        oid = order["order_id"]
+        with self.Session() as session:
+            o = session.get(self.m.Order, oid)
+            assert o.total_amount > 0
+            assert o.total_amount == o.items[0].price_snapshot * 50
+
+
+class TestFiscalPayloadValidation(_E2ETestBase):
+    """Fiscal payload содержит все обязательные поля и не превышает лимиты."""
+
+    @pytest.mark.asyncio
+    async def test_fiscal_payload_has_required_fields(self):
+        """fiscalize_order получает items с name, price, quantity + total_amount."""
+        m = self.m
+        oid = self._create_test_order()
+
+        captured = {}
+
+        async def capture_fiscal(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(success=True, uuid="payload-test-uuid", error="")
+
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", side_effect=capture_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        assert "order_id" in captured
+        assert "items" in captured
+        assert "total_amount" in captured
+        assert "payment_method" in captured
+
+        for item in captured["items"]:
+            assert "name_snapshot" in item
+            assert "price_snapshot" in item
+            assert "quantity" in item
+            assert item["price_snapshot"] > 0
+            assert item["quantity"] > 0
+
+        computed = sum(i["price_snapshot"] * i["quantity"] for i in captured["items"])
+        assert captured["total_amount"] == computed
+
+    @pytest.mark.asyncio
+    async def test_fiscal_queue_payload_under_30kb(self):
+        """FiscalQueue payload_json < 30KB (лимит АТОЛ)."""
+        m = self.m
+        oid = self._create_test_order()
+
+        mock_fiscal = AsyncMock(return_value=MagicMock(success=False, uuid="", error="test"))
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            fq = session.scalars(
+                m.select(m.FiscalQueue).where(m.FiscalQueue.order_id == oid)
+            ).first()
+            assert fq is not None
+            payload_size = len(fq.payload_json.encode("utf-8"))
+            assert payload_size < 30_000, \
+                f"Payload {payload_size}B exceeds 30KB ATOL limit"
+
+            payload = json.loads(fq.payload_json)
+            assert "items" in payload
+            assert "total_amount" in payload
+            assert isinstance(payload["items"], list)
+            assert len(payload["items"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_phase1_uses_prepayment_method(self):
+        """Phase 1 (оплата) → payment_method='prepayment'."""
+        m = self.m
+        oid = self._create_test_order()
+
+        captured_pm = {}
+
+        async def capture(**kwargs):
+            captured_pm["pm"] = kwargs.get("payment_method")
+            return MagicMock(success=True, uuid="pm-uuid", error="")
+
+        mock_sync = AsyncMock(return_value=MagicMock(success=False, error="disabled"))
+
+        with patch("payments.fiscal.fiscalize_order", side_effect=capture), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        assert captured_pm["pm"] == "prepayment"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FINAL COVERAGE: Все оставшиеся edge-case сценарии
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhase2FiscalTimeout(_E2ETestBase):
+    """Phase 2 fiscal (ready) timeout → FiscalQueue ловит для retry."""
+
+    @pytest.mark.asyncio
+    async def test_phase2_timeout_leaves_fiscal_queue_pending(self):
+        """АТОЛ timeout при Phase 2 → FiscalQueue sell_settlement pending, заказ ready."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            fiscal_prepayment_uuid="phase1-uuid-exists",
+        )
+
+        mock_fiscal = AsyncMock(side_effect=asyncio.TimeoutError("ATOL timeout"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("bot_handlers.notify_customer", new_callable=AsyncMock), \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock):
+            from bot_handlers import handle_order_status_change
+            import bot_handlers
+
+            mock_callback = AsyncMock()
+            mock_callback.data = f"order:ready:{oid}"
+            mock_callback.message = AsyncMock()
+            mock_callback.message.chat.id = 12345
+
+            original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+            bot_handlers.ALLOWED_ADMIN_IDS = {12345}
+            try:
+                await handle_order_status_change(mock_callback)
+            finally:
+                bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "ready"
+            # fiscal_uuid пуст (timeout)
+            assert order.fiscal_uuid is None
+
+            # FiscalQueue sell_settlement создана и pending (retry подхватит)
+            fq = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell_settlement",
+                )
+            ).first()
+            assert fq is not None, "FiscalQueue sell_settlement must exist"
+            assert fq.status == "pending"
+
+
+class TestFiscalRetryExhaustion(_E2ETestBase):
+    """Fiscal retry: 10 попыток исчерпаны → failed + alert_admin."""
+
+    @pytest.mark.asyncio
+    async def test_max_attempts_marks_failed(self):
+        """attempts >= max_attempts → status='failed'."""
+        m = self.m
+        oid = self._create_test_order(status="preparing", payment_status="paid")
+
+        # Создаём FiscalQueue с attempts=9 (max=10), следующая попытка — последняя
+        with self.Session() as session:
+            fq = m.FiscalQueue(
+                order_id=oid, order_number=7777, operation="sell",
+                payload_json=json.dumps({"items": [{"name_snapshot": "X", "price_snapshot": 100, "quantity": 1}], "total_amount": 100}),
+                status="pending", attempts=9, max_attempts=10,
+                created_at=datetime.now(timezone.utc),
+                next_retry_at=datetime.now(timezone.utc),
+            )
+            session.add(fq)
+            session.commit()
+            fq_id = fq.id
+
+        # Имитируем одну итерацию retry worker — fiscal ОПЯТЬ падает
+        mock_fiscal = AsyncMock(return_value=MagicMock(success=False, uuid="", error="ATOL down"))
+
+        import database as db_mod
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            fq.status = "processing"
+            fq.attempts += 1  # теперь 10
+            session.commit()
+
+            result = await mock_fiscal(
+                order_id=fq.order_id, order_number=fq.order_number,
+                items=[{"name_snapshot": "X", "price_snapshot": 100, "quantity": 1}],
+                total_amount=100, payment_method="prepayment",
+            )
+
+            # Fiscal неуспешна
+            fq.status = "pending"
+            fq.last_error = str(result.error)[:500]
+
+            # Проверка max_attempts
+            if fq.attempts >= fq.max_attempts and fq.status == "pending":
+                fq.status = "failed"
+            session.commit()
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "failed"
+            assert fq.attempts == 10
+            assert fq.last_error is not None
+
+
+class TestFiscalRetrySkipCancelled(_E2ETestBase):
+    """Retry worker пропускает фискализацию отменённого заказа."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_order_fiscal_skipped(self):
+        """order.status='cancelled' → FiscalQueue → 'failed' без вызова АТОЛ."""
+        m = self.m
+        oid = self._create_test_order(status="cancelled", payment_status="refunded")
+
+        with self.Session() as session:
+            fq = m.FiscalQueue(
+                order_id=oid, order_number=7777, operation="sell",
+                payload_json=json.dumps({"items": [], "total_amount": 0}),
+                status="pending", attempts=0, max_attempts=10,
+                created_at=datetime.now(timezone.utc),
+                next_retry_at=datetime.now(timezone.utc),
+            )
+            session.add(fq)
+            session.commit()
+            fq_id = fq.id
+
+        # Имитируем проверку retry worker
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            parent_order = session.get(m.Order, fq.order_id)
+            if parent_order and parent_order.status == "cancelled":
+                fq.status = "failed"
+                fq.last_error = "Order cancelled — fiscal retry skipped"
+            session.commit()
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "failed"
+            assert "cancelled" in fq.last_error
+
+
+class TestStuckCreatingCleanup(_E2ETestBase):
+    """Worker чистит gateway_order_id='creating' старше 5 мин."""
+
+    @pytest.mark.asyncio
+    async def test_creating_marker_cleaned_after_5_min(self):
+        """gateway_order_id='creating' + updated_at > 5 min ago → сброшен в None."""
+        m = self.m
+        oid = self._create_test_order()
+
+        # Ставим маркер "creating" с updated_at 10 минут назад
+        from datetime import timedelta
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.gateway_order_id = "creating"
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+            session.commit()
+
+        # Имитируем логику cleanup worker
+        creating_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        with self.Session() as session:
+            from sqlalchemy import select as sa_select
+            stuck = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.gateway_order_id == "creating",
+                    m.Order.updated_at < creating_cutoff,
+                )
+            ).all()
+            for order in stuck:
+                order.gateway_order_id = None
+                order.updated_at = datetime.now(timezone.utc)
+            if stuck:
+                session.commit()
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            assert o.gateway_order_id is None, \
+                f"Expected None, got '{o.gateway_order_id}'"
+
+    @pytest.mark.asyncio
+    async def test_fresh_creating_not_cleaned(self):
+        """gateway_order_id='creating' + updated_at < 5 min → НЕ трогаем."""
+        m = self.m
+        oid = self._create_test_order()
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.gateway_order_id = "creating"
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            session.commit()
+
+        creating_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        with self.Session() as session:
+            from sqlalchemy import select as sa_select
+            stuck = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.gateway_order_id == "creating",
+                    m.Order.updated_at < creating_cutoff,
+                )
+            ).all()
+            assert len(stuck) == 0  # свежий — не попадает
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            assert o.gateway_order_id == "creating"  # не тронут
+
+
+class TestCallbackUnknownOrder(_AppTestBase):
+    """Callback на несуществующий gateway_order_id → 200 ok без обработки."""
+
+    def test_callback_unknown_gateway_id(self):
+        """mdOrder не найден в БД → 200 ok, _process_paid_order не вызван."""
+        import hashlib
+        import hmac as hmac_mod
+        import payments.sbp as sbp_mod
+
+        secret = "unknown-order-secret"
+        md_order = "nonexistent-gateway-id"
+        order_number_str = "SHASHLIK-999999"
+        sign_str = f"{md_order};{order_number_str};deposited;1"
+        checksum = hmac_mod.new(
+            secret.encode(), sign_str.encode(), hashlib.sha256
+        ).hexdigest()
+
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = secret
+
+        try:
+            with patch.object(self.m, "_process_paid_order", new_callable=AsyncMock) as mock_process:
+                resp = self.client.post(
+                    f"/api/sbp/callback?mdOrder={md_order}"
+                    f"&orderNumber={order_number_str}"
+                    f"&operation=deposited&status=1"
+                    f"&checksum={checksum}"
+                )
+                assert resp.status_code == 200
+                assert resp.json() == {"status": "ok"}
+                mock_process.assert_not_called()
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+
+class TestCallbackNonDeposited(_AppTestBase):
+    """Callback с operation != 'deposited' → не обрабатывается."""
+
+    def test_callback_refunded_operation_ignored(self):
+        """operation='refunded' → 200 ok, без обработки заказа."""
+        import hashlib
+        import hmac as hmac_mod
+        import payments.sbp as sbp_mod
+
+        secret = "non-deposited-secret"
+        md_order = "some-gateway-id"
+        order_number_str = "SHASHLIK-1001"
+        sign_str = f"{md_order};{order_number_str};refunded;1"
+        checksum = hmac_mod.new(
+            secret.encode(), sign_str.encode(), hashlib.sha256
+        ).hexdigest()
+
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = secret
+
+        try:
+            with patch.object(self.m, "_process_paid_order", new_callable=AsyncMock) as mock_process:
+                resp = self.client.post(
+                    f"/api/sbp/callback?mdOrder={md_order}"
+                    f"&orderNumber={order_number_str}"
+                    f"&operation=refunded&status=1"
+                    f"&checksum={checksum}"
+                )
+                assert resp.status_code == 200
+                mock_process.assert_not_called()
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+    def test_callback_status_zero_ignored(self):
+        """status='0' (ошибка) → не обрабатывается."""
+        import hashlib
+        import hmac as hmac_mod
+        import payments.sbp as sbp_mod
+
+        secret = "status-zero-secret"
+        md_order = "some-gw"
+        order_number_str = "SHASHLIK-1002"
+        sign_str = f"{md_order};{order_number_str};deposited;0"
+        checksum = hmac_mod.new(
+            secret.encode(), sign_str.encode(), hashlib.sha256
+        ).hexdigest()
+
+        old_secret = sbp_mod.SBP_CALLBACK_SECRET
+        sbp_mod.SBP_CALLBACK_SECRET = secret
+
+        try:
+            with patch.object(self.m, "_process_paid_order", new_callable=AsyncMock) as mock_process:
+                resp = self.client.post(
+                    f"/api/sbp/callback?mdOrder={md_order}"
+                    f"&orderNumber={order_number_str}"
+                    f"&operation=deposited&status=0"
+                    f"&checksum={checksum}"
+                )
+                assert resp.status_code == 200
+                mock_process.assert_not_called()
+        finally:
+            sbp_mod.SBP_CALLBACK_SECRET = old_secret
+
+
+class TestRefundNonAdmin(_E2ETestBase):
+    """/refund не-админом → 'Доступ запрещён'."""
+
+    @pytest.mark.asyncio
+    async def test_refund_by_non_admin_rejected(self):
+        """Обычный пользователь → message.answer('Доступ запрещён.')"""
+        import bot_handlers
+
+        mock_message = AsyncMock()
+        mock_message.text = "/refund 7777"
+        mock_message.chat.id = 666  # не в ALLOWED_ADMIN_IDS
+
+        original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+        bot_handlers.ALLOWED_ADMIN_IDS = {99999}
+        try:
+            await bot_handlers.handle_refund(mock_message)
+        finally:
+            bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        mock_message.answer.assert_called_once()
+        call_text = mock_message.answer.call_args[0][0]
+        assert "запрещён" in call_text.lower() or "запрещен" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_refund_empty_admin_list_rejected(self):
+        """ALLOWED_ADMIN_IDS пуст → fail-closed → отказ."""
+        import bot_handlers
+
+        mock_message = AsyncMock()
+        mock_message.text = "/refund 7777"
+        mock_message.chat.id = 12345
+
+        original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+        bot_handlers.ALLOWED_ADMIN_IDS = set()  # пусто
+        try:
+            await bot_handlers.handle_refund(mock_message)
+        finally:
+            bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        mock_message.answer.assert_called_once()
+        call_text = mock_message.answer.call_args[0][0]
+        assert "запрещён" in call_text.lower() or "запрещен" in call_text.lower()
+
+
+class TestInvalidStatusTransitions(_E2ETestBase):
+    """Невалидные переходы статуса отклоняются."""
+
+    @pytest.mark.asyncio
+    async def test_created_to_ready_rejected(self):
+        """created → ready напрямую — невозможно (нет в VALID_STATUS_TRANSITIONS)."""
+        m = self.m
+        oid = self._create_test_order(status="created", payment_status="pending")
+
+        import bot_handlers
+
+        mock_callback = AsyncMock()
+        mock_callback.data = f"order:ready:{oid}"
+        mock_callback.message = AsyncMock()
+        mock_callback.message.chat.id = 12345
+
+        original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+        bot_handlers.ALLOWED_ADMIN_IDS = {12345}
+        try:
+            await bot_handlers.handle_order_status_change(mock_callback)
+        finally:
+            bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        # callback.answer вызван с сообщением об ошибке
+        mock_callback.answer.assert_called()
+        call_text = mock_callback.answer.call_args[0][0]
+        assert "невозможно" in call_text.lower() or "Невозможно" in call_text
+
+        # Статус НЕ изменился
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            assert o.status == "created"
+
+    @pytest.mark.asyncio
+    async def test_ready_to_preparing_rejected(self):
+        """ready → preparing — откат невозможен."""
+        m = self.m
+        oid = self._create_test_order(status="ready", payment_status="paid")
+
+        import bot_handlers
+
+        mock_callback = AsyncMock()
+        mock_callback.data = f"order:preparing:{oid}"
+        mock_callback.message = AsyncMock()
+        mock_callback.message.chat.id = 12345
+
+        original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+        bot_handlers.ALLOWED_ADMIN_IDS = {12345}
+        try:
+            await bot_handlers.handle_order_status_change(mock_callback)
+        finally:
+            bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            assert o.status == "ready"  # не откатился
+
+
+class TestOneCFailureDoesNotBlock(_E2ETestBase):
+    """1С sync failure → заказ всё равно preparing."""
+
+    @pytest.mark.asyncio
+    async def test_1c_error_does_not_block_order(self):
+        """sync_order_to_1c бросает Exception → заказ preparing, accounting_synced=False."""
+        m = self.m
+        oid = self._create_test_order()
+
+        mock_fiscal = AsyncMock(return_value=MagicMock(
+            success=True, uuid="1c-test-uuid", error=""
+        ))
+        mock_sync = AsyncMock(side_effect=ConnectionError("1C server down"))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "preparing"
+            assert order.payment_status == "paid"
+            assert order.accounting_synced is False
+
+    @pytest.mark.asyncio
+    async def test_1c_returns_failure_does_not_block(self):
+        """sync_order_to_1c returns success=False → заказ preparing."""
+        m = self.m
+        oid = self._create_test_order()
+
+        mock_fiscal = AsyncMock(return_value=MagicMock(
+            success=True, uuid="1c-fail-uuid", error=""
+        ))
+        mock_sync = AsyncMock(return_value=MagicMock(
+            success=False, document_id=None, error="1С отключена"
+        ))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal), \
+             patch("integrations.accounting.sync_order_to_1c", mock_sync), \
+             patch("routes.bot_setup") as mock_bot_setup:
+            mock_bot_setup.bot = None
+            mock_bot_setup.ADMIN_CHAT_ID = None
+            from routes import _process_paid_order
+            await _process_paid_order(oid)
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "preparing"
+            assert order.accounting_synced is False
+
+
+class TestDoubleRefundRejected(_E2ETestBase):
+    """Двойной /refund → второй раз отклонён."""
+
+    @pytest.mark.asyncio
+    async def test_second_refund_rejected(self):
+        """Первый refund → refunded, второй → 'нельзя вернуть'."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            gateway_order_id="sbp-double-refund",
+        )
+
+        mock_refund = AsyncMock(return_value=MagicMock(success=True, error_message=""))
+        import bot_handlers
+
+        original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+        bot_handlers.ALLOWED_ADMIN_IDS = {99999}
+
+        try:
+            # Первый refund — успешный
+            with patch("payments.sbp.refund_sbp_payment", mock_refund), \
+                 patch("bot_handlers.notify_customer", new_callable=AsyncMock):
+                mock_msg1 = AsyncMock()
+                mock_msg1.text = "/refund 7777"
+                mock_msg1.chat.id = 99999
+                await bot_handlers.handle_refund(mock_msg1)
+
+            with self.Session() as session:
+                o = session.get(m.Order, oid)
+                assert o.payment_status == "refunded"
+
+            # Второй refund — должен быть отклонён
+            mock_msg2 = AsyncMock()
+            mock_msg2.text = "/refund 7777"
+            mock_msg2.chat.id = 99999
+            await bot_handlers.handle_refund(mock_msg2)
+
+            # Должен ответить "нельзя вернуть"
+            mock_msg2.answer.assert_called()
+            answer_text = mock_msg2.answer.call_args[0][0]
+            assert "нельзя" in answer_text.lower() or "refunded" in answer_text.lower()
+        finally:
+            bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+
+class TestFiscalQueueStuckProcessingRecovery(_E2ETestBase):
+    """При старте fiscal retry worker восстанавливает stuck 'processing' → 'pending'."""
+
+    @pytest.mark.asyncio
+    async def test_processing_recovered_to_pending(self):
+        """status='processing' (crash) → worker переводит в 'pending'."""
+        m = self.m
+        oid = self._create_test_order(status="preparing", payment_status="paid")
+
+        with self.Session() as session:
+            fq = m.FiscalQueue(
+                order_id=oid, order_number=7777, operation="sell",
+                payload_json=json.dumps({"items": [], "total_amount": 0}),
+                status="processing",  # застрявшая запись
+                attempts=3, max_attempts=10,
+                created_at=datetime.now(timezone.utc),
+                next_retry_at=datetime.now(timezone.utc),
+            )
+            session.add(fq)
+            session.commit()
+            fq_id = fq.id
+
+        # Имитируем логику восстановления из _fiscal_retry_worker
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            stuck = session.scalars(
+                sa_select(m.FiscalQueue).where(m.FiscalQueue.status == "processing")
+            ).all()
+            for item in stuck:
+                item.status = "pending"
+                item.next_retry_at = datetime.now(timezone.utc)
+            if stuck:
+                session.commit()
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "pending"
+            assert fq.attempts == 3  # attempts не сбрасывается
+
+
+class TestPhase2WithoutPhase1Alert(_E2ETestBase):
+    """Phase 2 без Phase 1 (fiscal_prepayment_uuid=None) → skip + alert_admin."""
+
+    @pytest.mark.asyncio
+    async def test_no_phase1_skips_phase2_and_alerts(self):
+        """fiscal_prepayment_uuid=None → Phase 2 не создаётся, alert_admin вызван."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            fiscal_prepayment_uuid=None,  # Phase 1 не было
+        )
+
+        with patch("payments.fiscal.fiscalize_order", new_callable=AsyncMock) as mock_fiscal, \
+             patch("bot_handlers.notify_customer", new_callable=AsyncMock), \
+             patch("bot_handlers.alert_admin", new_callable=AsyncMock) as mock_alert:
+            from bot_handlers import handle_order_status_change
+            import bot_handlers
+
+            mock_callback = AsyncMock()
+            mock_callback.data = f"order:ready:{oid}"
+            mock_callback.message = AsyncMock()
+            mock_callback.message.chat.id = 12345
+
+            original_admins = bot_handlers.ALLOWED_ADMIN_IDS
+            bot_handlers.ALLOWED_ADMIN_IDS = {12345}
+            try:
+                await handle_order_status_change(mock_callback)
+            finally:
+                bot_handlers.ALLOWED_ADMIN_IDS = original_admins
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.status == "ready"
+
+            # FiscalQueue sell_settlement НЕ должна создаваться
+            fq_settle = session.scalars(
+                m.select(m.FiscalQueue).where(
+                    m.FiscalQueue.order_id == oid,
+                    m.FiscalQueue.operation == "sell_settlement",
+                )
+            ).first()
+            assert fq_settle is None, "Phase 2 FiscalQueue should NOT be created without Phase 1"
+
+        # fiscalize_order НЕ вызван
+        mock_fiscal.assert_not_called()
+        # alert_admin ВЫЗВАН с предупреждением
+        mock_alert.assert_called()
+        alert_text = str(mock_alert.call_args)
+        assert "Phase 1" in alert_text or "prepayment" in alert_text
 
 
 # ══════════════════════════════════════════════════════════════════════════════

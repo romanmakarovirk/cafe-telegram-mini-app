@@ -72,6 +72,7 @@ from workers import (
     _stoplist_auto_enable_worker,
     _order_timeout_worker,
     _fiscal_retry_worker,
+    _sbp_payment_polling_worker,
 )
 
 import database as _database_module
@@ -101,7 +102,8 @@ async def lifespan(_: FastAPI):
     stoplist_task = asyncio.create_task(_stoplist_auto_enable_worker())
     timeout_task = asyncio.create_task(_order_timeout_worker())
     fiscal_retry_task = asyncio.create_task(_fiscal_retry_worker())
-    logging.info("Background workers started: stoplist auto-enable, order timeout, fiscal retry")
+    sbp_polling_task = asyncio.create_task(_sbp_payment_polling_worker())
+    logging.info("Background workers started: stoplist auto-enable, order timeout, fiscal retry, sbp polling")
 
     # Keep-alive self-ping (only when deployed with a real URL)
     keep_alive_task = None
@@ -147,7 +149,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        for task in (stoplist_task, timeout_task, fiscal_retry_task):
+        for task in (stoplist_task, timeout_task, fiscal_retry_task, sbp_polling_task):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -183,7 +185,10 @@ if _extra_cors:
     for _origin in _extra_cors.split(","):
         _origin = _origin.strip()
         if _origin and _origin not in _cors_origins:
-            _cors_origins.append(_origin)
+            if _origin.startswith("https://") and " " not in _origin and "*" not in _origin:
+                _cors_origins.append(_origin)
+            else:
+                logging.warning("EXTRA_CORS_ORIGINS: пропуск невалидного origin %r", _origin)
 
 app.add_middleware(
     CORSMiddleware,

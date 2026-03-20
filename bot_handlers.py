@@ -50,7 +50,7 @@ async def alert_admin(message: str) -> None:
     try:
         await bot_setup.bot.send_message(
             chat_id=bot_setup.ADMIN_CHAT_ID,
-            text=f"\u26a0\ufe0f <b>ALERT</b>\n\n{message}",
+            text=f"\u26a0\ufe0f <b>ALERT</b>\n\n{escape(message)}",
         )
     except Exception:
         logging.exception("Failed to send admin alert")
@@ -290,10 +290,10 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             if has_phase1 and fiscal_safety_record:
                 fiscal_safety_id = fiscal_safety_record.id
 
-            await notify_customer(
-                order,
-                f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!",
-            )
+            receipt_msg = f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!"
+            if order.fiscal_prepayment_uuid:
+                receipt_msg += f'\n\n<a href="https://receipt.atol.ru/{order.fiscal_prepayment_uuid}">Кассовый чек</a>'
+            await notify_customer(order, receipt_msg)
             await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
             await callback.answer("🟢 Готов!")
 
@@ -588,8 +588,14 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
 
     action = parts[1]
 
+    try:
+        _int_part = int(parts[2]) if action in ("on", "off", "time") else None
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные.")
+        return
+
     if action == "on":
-        item_id = int(parts[2])
+        item_id = _int_part
         with database.db_session() as session:
             item = session.get(MenuItem, item_id)
             if item:
@@ -605,7 +611,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                 await callback.answer("Блюдо не найдено.")
 
     elif action == "off":
-        item_id = int(parts[2])
+        item_id = _int_part
         with database.db_session() as session:
             item = session.get(MenuItem, item_id)
             if item:
@@ -676,8 +682,12 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
         if len(parts) < 4:
             await callback.answer("Ошибка.")
             return
-        item_id = int(parts[2])
-        minutes = int(parts[3])
+        item_id = _int_part
+        try:
+            minutes = int(parts[3])
+        except (ValueError, IndexError):
+            await callback.answer("Некорректные данные.")
+            return
         with database.db_session() as session:
             item = session.get(MenuItem, item_id)
             if item:

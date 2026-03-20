@@ -49,10 +49,23 @@ from security import (
 from serializers import _format_available_at, _resolve_image_url, serialize_menu_item, serialize_order
 import bot_setup
 
+try:
+    from cachetools import TTLCache
+except ImportError:
+    TTLCache = None
+
 router = APIRouter()
 
 # Structured audit logger for payment/fiscal events (54-FZ compliance)
 _audit = logging.getLogger("audit.payment")
+
+# In-memory menu cache (TTL 5 min) — avoids DB query on every /api/menu request
+_menu_cache: dict[str, Any] = TTLCache(maxsize=4, ttl=300) if TTLCache else {}
+
+
+def invalidate_menu_cache() -> None:
+    """Сброс кэша меню при изменении стоп-листа или позиций."""
+    _menu_cache.clear()
 
 
 def audit_log(event: str, **kwargs: Any) -> None:
@@ -211,6 +224,14 @@ async def get_menu(request: Request) -> dict[str, Any]:
     if not general_limiter.check(client_ip):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait.")
 
+    # Проверяем кэш (TTL 5 мин)
+    cached = _menu_cache.get("menu_categories")
+    if cached is not None:
+        return {
+            **cached,
+            "schedule": _get_cafe_schedule(),  # schedule всегда свежее
+        }
+
     with db_session() as session:
         items = session.scalars(
             select(MenuItem).order_by(MenuItem.category, MenuItem.sort_order)
@@ -277,10 +298,15 @@ async def get_menu(request: Request) -> dict[str, Any]:
             cat_data["note"] = entry["note"]
         categories.append(cat_data)
 
-    return {
+    result = {
         "categories": categories,
         "items_count": sum(len(category["items"]) for category in categories),
         "global_note": "Чай чёрный/зелёный 200 мл — бесплатно к каждому заказу",
+    }
+    _menu_cache["menu_categories"] = result
+
+    return {
+        **result,
         "schedule": _get_cafe_schedule(),
     }
 
@@ -468,7 +494,8 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
                 session.commit()
 
     if not result.success:
-        raise HTTPException(status_code=502, detail=f"СБП ошибка: {result.error_message}")
+        logging.error("SBP create payment failed for order %d: %s", order_id, result.error_message)
+        raise HTTPException(status_code=502, detail="Ошибка создания платежа. Попробуйте ещё раз.")
 
     return {
         "status": "created",
@@ -504,7 +531,8 @@ async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
     result = await check_sbp_payment(gateway_order_id)
 
     if not result.success:
-        return {"status": "check_error", "error": result.error_message}
+        logging.warning("SBP check status failed for order %d: %s", order_id, result.error_message)
+        return {"status": "check_error", "error": "Не удалось проверить статус платежа."}
 
     if result.is_paid:
         with db_session() as session:
@@ -928,7 +956,7 @@ async def notify_admin_about_order(order_id: int) -> None:
     with db_session() as session:
         order = fetch_order(session, order_id)
         item_lines = "\n".join(
-            f"• {item.name_snapshot} x{item.quantity} = {rub(item.subtotal)}"
+            f"• {escape(item.name_snapshot)} x{item.quantity} = {rub(item.subtotal)}"
             for item in order.items
         )
         text = (
@@ -1267,6 +1295,7 @@ async def manage_stoplist(payload: StopListRequest, request: Request) -> dict[st
 
         session.commit()
 
+    invalidate_menu_cache()
     action_text = "отключено" if payload.action == "disable" else "включено"
     logging.info("Стоп-лист: %s %d позиций", action_text, len(affected))
     return {"action": payload.action, "affected": affected, "count": len(affected)}
@@ -1281,6 +1310,8 @@ async def serve_photo(filename: str) -> FileResponse:
     photo_path = BASE_DIR / "photos" / safe_name
     if not photo_path.exists() or not photo_path.is_file():
         raise HTTPException(status_code=404, detail="Photo not found.")
+    if not photo_path.resolve().is_relative_to((BASE_DIR / "photos").resolve()):
+        raise HTTPException(status_code=404, detail="Photo not found.")
     return FileResponse(
         photo_path,
         headers={"Cache-Control": "public, max-age=86400"},
@@ -1294,7 +1325,9 @@ async def menu_placeholder(item_id: int) -> Response:
         if item is None:
             raise HTTPException(status_code=404, detail="Menu item not found.")
 
-    category = CATEGORY_BY_SLUG[item.category]
+    category = CATEGORY_BY_SLUG.get(item.category)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Category not found.")
     primary, secondary = category["colors"]
 
     svg = f"""
@@ -1345,6 +1378,14 @@ async def app_config() -> dict[str, Any]:
         "bot_configured": bool(BOT_TOKEN),
         "checkout_mode": "sbp",
         "payment_timeout_seconds": ORDER_PAYMENT_TIMEOUT_MINUTES * 60,
+        "company_info": {
+            "name": os.getenv("COMPANY_NAME", ""),
+            "inn": os.getenv("COMPANY_INN", ""),
+            "ogrn": os.getenv("COMPANY_OGRN", ""),
+            "address": os.getenv("COMPANY_ADDRESS", ""),
+            "offer_url": os.getenv("OFFER_URL", ""),
+            "privacy_url": os.getenv("PRIVACY_URL", ""),
+        },
     }
 
 
@@ -1385,7 +1426,10 @@ async def submit_review(payload: SubmitReviewRequest, request: Request) -> dict[
             created_at=now_utc(),
         )
         session.add(review)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            return {"status": "already_submitted"}
 
     if bot_setup.bot and bot_setup.ADMIN_CHAT_ID and payload.rating:
         stars = "\u2B50" * payload.rating

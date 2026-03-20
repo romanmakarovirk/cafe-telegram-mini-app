@@ -152,6 +152,43 @@ def _migrate_columns() -> None:
                 if "fiscal_prepayment_uuid" not in existing:
                     conn.execute(text("ALTER TABLE orders ADD COLUMN fiscal_prepayment_uuid VARCHAR(100)"))
                     logging.info("Migration: added orders.fiscal_prepayment_uuid column")
+                if "gateway_order_id" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN gateway_order_id VARCHAR(100)"))
+                    logging.info("Migration: added orders.gateway_order_id column")
+                    try:
+                        conn.execute(text("CREATE INDEX ix_orders_gateway_order_id ON orders (gateway_order_id)"))
+                    except Exception:
+                        pass
+                if "payment_mode" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN payment_mode VARCHAR(30) DEFAULT 'sbp'"))
+                    logging.info("Migration: added orders.payment_mode column")
+                if "cashier_message_id" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN cashier_message_id INTEGER"))
+                    logging.info("Migration: added orders.cashier_message_id column")
+                if "kitchen_printed" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN kitchen_printed BOOLEAN DEFAULT false"))
+                    logging.info("Migration: added orders.kitchen_printed column")
+                if "accounting_synced" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN accounting_synced BOOLEAN DEFAULT false"))
+                    logging.info("Migration: added orders.accounting_synced column")
+                if "accounting_doc_id" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN accounting_doc_id VARCHAR(100)"))
+                    logging.info("Migration: added orders.accounting_doc_id column")
+                if "fiscal_uuid" not in existing:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN fiscal_uuid VARCHAR(100)"))
+                    logging.info("Migration: added orders.fiscal_uuid column")
+        # Unique constraint на reviews (защита от дублей)
+        if "reviews" in inspector.get_table_names():
+            with sys.modules[__name__].engine.begin() as conn:
+                try:
+                    conn.execute(text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_order_user "
+                        "ON reviews (order_id, telegram_user_id)"
+                    ))
+                    logging.info("Migration: ensured uq_review_order_user index")
+                except Exception:
+                    logging.debug("uq_review_order_user already exists or not supported")
+
     except Exception:
         logging.exception("Column migration failed (non-critical)")
 

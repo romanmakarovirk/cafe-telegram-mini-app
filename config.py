@@ -31,6 +31,20 @@ def _setup_logging() -> None:
 
 _setup_logging()
 
+# ── Sentry Error Tracking ─────────────────────────────────────────────────
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            traces_sample_rate=0.1,
+            environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+        )
+        logging.info("Sentry initialized (traces_sample_rate=0.1)")
+    except ImportError:
+        logging.warning("sentry-sdk not installed, Sentry disabled")
+
 BASE_DIR = Path(__file__).resolve().parent
 if load_dotenv is not None:
     load_dotenv(BASE_DIR / ".env")
