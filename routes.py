@@ -39,6 +39,7 @@ from security import (
     SubmitReviewRequest,
     callback_limiter,
     general_limiter,
+    get_client_ip,
     get_verified_user_id,
     get_verified_user_info,
     order_limiter,
@@ -220,7 +221,7 @@ async def readyz_readiness() -> Response:
 
 @router.get("/api/menu")
 async def get_menu(request: Request) -> dict[str, Any]:
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     if not general_limiter.check(client_ip):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait.")
 
@@ -572,7 +573,7 @@ async def sbp_callback(request: Request) -> dict[str, str]:
     """Callback от Сбербанка при изменении статуса платежа."""
     from payments.sbp import verify_callback
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     if not callback_limiter.check(client_ip):
         raise HTTPException(status_code=429, detail="Too many callback requests.")
 
@@ -590,6 +591,11 @@ async def sbp_callback(request: Request) -> dict[str, str]:
     operation = params.get("operation", "")
     status = params.get("status", "")
     checksum = params.get("checksum", "")
+
+    expected_keys = {"mdOrder", "orderNumber", "operation", "status", "checksum"}
+    extra_keys = set(params.keys()) - expected_keys
+    if extra_keys:
+        logging.warning("СБП callback: неожиданные параметры: %s (mdOrder=%s)", sorted(extra_keys), md_order)
 
     logging.info(
         "СБП callback: mdOrder=%s, orderNumber=%s, operation=%s, status=%s",
@@ -1468,7 +1474,7 @@ class ClientErrorPayload(_BaseModel):
 @router.post("/api/client-error")
 async def report_client_error(payload: ClientErrorPayload, request: Request) -> dict[str, str]:
     """Frontend reports JS errors here for server-side logging."""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     if not general_limiter.check(f"client_error:{client_ip}"):
         raise HTTPException(status_code=429, detail="Too many error reports.")
 

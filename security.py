@@ -27,6 +27,14 @@ from config import (
 import json as json_module
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract real client IP behind Render proxy."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def verify_telegram_init_data(init_data: str, bot_token: str) -> tuple[dict | None, str]:
     """Verify Telegram WebApp initData signature."""
     parsed: dict[str, str] = {}

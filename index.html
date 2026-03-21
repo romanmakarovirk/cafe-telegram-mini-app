@@ -2350,7 +2350,7 @@
 
       // Show receipt link if available
       const receiptLink = document.getElementById("sbp-receipt-link");
-      if (data.receipt_url) {
+      if (data.receipt_url && data.receipt_url.startsWith("https://")) {
         receiptLink.href = data.receipt_url;
         receiptLink.style.display = "inline";
       } else {
