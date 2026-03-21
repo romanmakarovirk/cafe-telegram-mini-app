@@ -134,7 +134,7 @@ async def _order_timeout_worker() -> None:
                     )
                     session.commit()
 
-                # Обнаружение застрявших refund_pending заказов
+                # Обнаружение и auto-retry застрявших refund_pending заказов
                 # (crash между commit и SBP refund call)
                 refund_stuck_cutoff = database.now_utc() - timedelta(minutes=10)
                 stuck_refunds = session.scalars(
@@ -143,21 +143,62 @@ async def _order_timeout_worker() -> None:
                         Order.updated_at < refund_stuck_cutoff,
                     )
                 ).all()
-                for order in stuck_refunds:
-                    logging.critical(
-                        "Stuck refund_pending: заказ №%d завис >10 мин, требуется ручной возврат",
-                        order.public_order_number,
-                    )
-                if stuck_refunds:
-                    from bot_handlers import alert_admin
-                    order_nums = ", ".join(
-                        f"#{o.public_order_number}" for o in stuck_refunds
-                    )
-                    await alert_admin(
-                        f"ЗАСТРЯВШИЕ ВОЗВРАТЫ: заказы {order_nums} "
-                        f"в статусе refund_pending более 10 минут. "
-                        f"Требуется ручной возврат через личный кабинет банка!"
-                    )
+                stuck_data = [
+                    (o.id, o.public_order_number, o.gateway_order_id, o.total_amount)
+                    for o in stuck_refunds
+                ]
+                session.commit()  # release before async I/O
+
+                for oid, onum, gw_oid, amount in stuck_data:
+                    if not gw_oid or gw_oid == "creating":
+                        logging.critical(
+                            "Stuck refund_pending: заказ №%d без gateway_order_id, ручной возврат",
+                            onum,
+                        )
+                        from bot_handlers import alert_admin
+                        await alert_admin(
+                            f"ЗАСТРЯВШИЙ ВОЗВРАТ: заказ #{onum} без gateway_order_id. "
+                            f"Требуется ручной возврат через ЛК банка!"
+                        )
+                        continue
+
+                    from payments.sbp import refund_sbp_payment
+                    refund_result = await refund_sbp_payment(gw_oid, amount)
+                    with database.db_session() as refund_session:
+                        order = refund_session.scalars(
+                            select(Order).where(
+                                Order.id == oid,
+                                Order.payment_status == "refund_pending",
+                            ).with_for_update()
+                        ).first()
+                        if not order:
+                            refund_session.commit()
+                            continue
+                        if refund_result.success:
+                            order.payment_status = "refunded"
+                            order.updated_at = database.now_utc()
+                            refund_session.commit()
+                            logging.info(
+                                "Auto-retry refund: заказ №%d успешно возвращён", onum,
+                            )
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"Автовозврат: заказ #{onum} — деньги возвращены клиенту (auto-retry)."
+                            )
+                        else:
+                            order.payment_status = "refund_failed"
+                            order.updated_at = database.now_utc()
+                            refund_session.commit()
+                            logging.critical(
+                                "Auto-retry refund FAILED: заказ №%d, ошибка: %s",
+                                onum, refund_result.error_message,
+                            )
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"ВОЗВРАТ НЕ УДАЛСЯ (auto-retry): заказ #{onum}. "
+                                f"Ошибка: {refund_result.error_message}. "
+                                f"Требуется ручной возврат через ЛК банка!"
+                            )
         except Exception:
             logging.exception("Ошибка в order timeout worker")
 

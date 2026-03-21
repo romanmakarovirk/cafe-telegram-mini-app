@@ -543,7 +543,15 @@ async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
 
     if result.is_paid:
         with db_session() as session:
-            order_check = fetch_order(session, order_id)
+            order_check = session.scalars(
+                select(Order).where(Order.id == order_id).with_for_update()
+            ).first()
+            if order_check is None:
+                raise HTTPException(status_code=404, detail="Order not found.")
+            if order_check.payment_status == "paid":
+                _ = order_check.items
+                session.commit()
+                return {"status": "paid", **serialize_order(order_check)}
             expected_kopecks = order_check.total_amount * 100
             if result.amount is None:
                 logging.error(
