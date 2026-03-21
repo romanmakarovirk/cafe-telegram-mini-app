@@ -486,8 +486,8 @@ def verify_callback(
     is_valid = hmac.compare_digest(expected.lower(), checksum.lower())
     if not is_valid:
         logger.warning(
-            "СБП callback: неверный checksum для order=%s (expected=%s, got=%s)",
-            order_number, expected[:16], checksum[:16],
+            "СБП callback: неверный checksum для order=%s (got=%s...)",
+            order_number, checksum[:8],
         )
 
     return is_valid

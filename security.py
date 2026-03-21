@@ -155,7 +155,8 @@ class SimpleRateLimiter:
         if len(self.hits) > self.MAX_KEYS:
             self._cleanup(now)
             if len(self.hits) > self.MAX_KEYS and key not in self.hits:
-                return False
+                oldest_key = min(self.hits, key=lambda k: self.hits[k][-1] if self.hits[k] else 0)
+                del self.hits[oldest_key]
 
         self.hits[key] = [t for t in self.hits[key] if now - t < self.window]
         if len(self.hits[key]) >= self.max:

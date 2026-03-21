@@ -582,8 +582,8 @@ async def sbp_callback(request: Request) -> dict[str, str]:
         for key, value in form_data.items():
             if key not in params:
                 params[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("СБП callback: ошибка парсинга form data: %s", e)
 
     md_order = params.get("mdOrder", "")
     order_number = params.get("orderNumber", "")
@@ -627,10 +627,16 @@ async def sbp_callback(request: Request) -> dict[str, str]:
             verify_result = await check_sbp_payment(md_order)
             if not verify_result.success or verify_result.amount is None:
                 logging.warning(
-                    "СБП callback: верификация суммы пропущена (SBP API unavailable), "
-                    "обработка по HMAC для заказа %d", order_id_to_process,
+                    "СБП callback: верификация суммы не удалась (SBP API unavailable), "
+                    "заказ %d НЕ обработан — ждём polling worker", order_id_to_process,
                 )
-            if verify_result.success and verify_result.amount is not None:
+                from bot_handlers import alert_admin
+                await alert_admin(
+                    f"⚠️ СБП callback: не удалось верифицировать сумму для заказа {order_id_to_process} "
+                    f"(SBP API недоступен). Polling worker подхватит."
+                )
+                return {"status": "ok"}
+            if verify_result.amount is not None:
                 if verify_result.amount != expected_kopecks:
                     # 3. Amount mismatch — снова берём lock для обновления статуса
                     with db_session() as session:
