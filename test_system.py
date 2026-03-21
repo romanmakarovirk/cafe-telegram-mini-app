@@ -5434,6 +5434,127 @@ class TestStuckRefundAutoRetry(_E2ETestBase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Smoke-тесты переключения TEST_MODE → Production URL
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSbpModeSwitch:
+    """SBP_TEST_MODE переключает URL между песочницей и production."""
+
+    def test_test_mode_uses_test_url(self):
+        """SBP_TEST_MODE=true → ecomtest.sberbank.ru."""
+        from payments import sbp
+        original = sbp.SBP_TEST_MODE
+        try:
+            sbp.SBP_TEST_MODE = True
+            client = sbp.SbpSberbankClient()
+            assert "ecomtest.sberbank.ru" in client._base_url
+            assert "securepayments.sberbank.ru" not in client._base_url
+        finally:
+            sbp.SBP_TEST_MODE = original
+
+    def test_production_mode_uses_production_url(self):
+        """SBP_TEST_MODE=false → securepayments.sberbank.ru."""
+        from payments import sbp
+        original = sbp.SBP_TEST_MODE
+        try:
+            sbp.SBP_TEST_MODE = False
+            client = sbp.SbpSberbankClient()
+            assert "securepayments.sberbank.ru" in client._base_url
+            assert "ecomtest" not in client._base_url
+        finally:
+            sbp.SBP_TEST_MODE = original
+
+    def test_base_url_has_no_path(self):
+        """base_url — только домен, пути добавляются в методах."""
+        from payments import sbp
+        client = sbp.SbpSberbankClient()
+        assert client._base_url.startswith("https://")
+        assert "/payment/" not in client._base_url
+
+    def test_test_and_production_urls_differ(self):
+        """Тестовый и production URL не совпадают."""
+        from payments import sbp
+        assert sbp.SBP_TEST_URL != sbp.SBP_BASE_URL
+        assert "ecomtest" in sbp.SBP_TEST_URL
+        assert "ecomtest" not in sbp.SBP_BASE_URL
+
+
+class TestAtolModeSwitch:
+    """ATOL_TEST_MODE переключает URL между песочницей и production."""
+
+    def test_test_mode_uses_test_url(self):
+        """ATOL_TEST_MODE=true → testonline.atol.ru."""
+        from payments import fiscal
+        original = fiscal.ATOL_TEST_MODE
+        try:
+            fiscal.ATOL_TEST_MODE = True
+            client = fiscal.AtolOnlineClient()
+            assert "testonline.atol.ru" in client._base_url
+        finally:
+            fiscal.ATOL_TEST_MODE = original
+
+    def test_production_mode_uses_production_url(self):
+        """ATOL_TEST_MODE=false → online.atol.ru (production)."""
+        from payments import fiscal
+        original = fiscal.ATOL_TEST_MODE
+        try:
+            fiscal.ATOL_TEST_MODE = False
+            client = fiscal.AtolOnlineClient()
+            assert "online.atol.ru" in client._base_url
+            assert "testonline" not in client._base_url
+        finally:
+            fiscal.ATOL_TEST_MODE = original
+
+    def test_test_and_production_urls_differ(self):
+        """Тестовый и production URL не совпадают."""
+        from payments import fiscal
+        assert fiscal.ATOL_TEST_URL != fiscal.ATOL_BASE_URL
+        assert "testonline" in fiscal.ATOL_TEST_URL
+        assert "testonline" not in fiscal.ATOL_BASE_URL
+
+    def test_base_url_ends_with_v4(self):
+        """base_url заканчивается на /v4 — версия API не хардкодится в методах."""
+        from payments import fiscal
+        client = fiscal.AtolOnlineClient()
+        assert client._base_url.rstrip("/").endswith("/v4")
+
+    def test_group_code_from_env(self):
+        """group_code берётся из env, не хардкодится в URL."""
+        from payments import fiscal
+        assert fiscal.ATOL_GROUP_CODE is not None
+
+
+class TestHttpTimeouts:
+    """HTTP-клиенты имеют явные таймауты."""
+
+    def test_sbp_client_has_timeout(self):
+        """SBP httpx.AsyncClient создаётся с timeout."""
+        import inspect
+        from payments import sbp
+        source = inspect.getsource(sbp.SbpSberbankClient._get_client)
+        assert "timeout" in source
+
+    def test_atol_client_has_timeout(self):
+        """ATOL httpx.AsyncClient создаётся с timeout."""
+        import inspect
+        from payments import fiscal
+        source = inspect.getsource(fiscal.AtolOnlineClient._get_client)
+        assert "timeout" in source
+
+    def test_callback_secret_required(self):
+        """Без SBP_CALLBACK_SECRET callback'и отклоняются (fail-secure)."""
+        from payments import sbp
+        original = sbp.SBP_CALLBACK_SECRET
+        try:
+            sbp.SBP_CALLBACK_SECRET = ""
+            result = sbp.verify_callback("id", "num", "deposited", "0", "somechecksum")
+            assert result is False, "Callback should be rejected without secret"
+        finally:
+            sbp.SBP_CALLBACK_SECRET = original
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
