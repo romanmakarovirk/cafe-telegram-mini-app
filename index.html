@@ -217,6 +217,9 @@
       padding: 10px 0 14px;
       margin-bottom: 10px;
       scrollbar-width: none;
+      background: rgba(247, 239, 228, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
 
     .category-rail::-webkit-scrollbar {
@@ -2086,8 +2089,10 @@
       if (!entries.length) {
         cartItemsContainer.innerHTML = `<div class="empty-state">Корзина пока пустая. Добавьте блюда из меню, чтобы оформить заказ.</div>`;
         cartTotalElement.textContent = formatPrice(0);
+        payButton.disabled = true;
         return;
       }
+      payButton.disabled = false;
 
       entries.forEach(([itemId, quantity]) => {
         const item = findMenuItem(itemId);
@@ -2244,6 +2249,8 @@
       sbpSuccessScreen.style.display = "none";
       sbpModal.classList.add("open");
       document.body.style.overflow = "hidden";
+      lockBodyScroll();
+      showBackButton(() => closeSbpModal());
       startSbpTimer();
 
       // Create real SBP payment
@@ -2413,6 +2420,8 @@
     function closeSbpModal() {
       sbpModal.classList.remove("open");
       document.body.style.overflow = "";
+      unlockBodyScroll();
+      hideBackButton();
       stopSbpPolling();
       if (sbpTimerInterval) {
         clearInterval(sbpTimerInterval);
@@ -2689,7 +2698,31 @@
         }
         if (sbpModal.classList.contains("open") && currentPaymentOrder) {
           startSbpPolling();
-          // Don't restart timer — time already passed
+          // Recalculate timer from localStorage timestamp
+          try {
+            const pending = JSON.parse(localStorage.getItem("cafe_pending_payment") || "null");
+            if (pending && pending.ts) {
+              const elapsed = Math.floor((Date.now() - pending.ts) / 1000);
+              sbpTimeLeft = Math.max(0, paymentTimeoutSeconds - elapsed);
+              if (sbpTimeLeft <= 0) {
+                stopSbpPolling();
+                closeSbpModal();
+                showToast("Время ожидания оплаты истекло. Попробуйте снова.", "error");
+                payButton.disabled = false;
+              } else {
+                updateTimerDisplay();
+                sbpTimerInterval = setInterval(() => {
+                  sbpTimeLeft--;
+                  if (sbpTimeLeft <= 0) {
+                    clearInterval(sbpTimerInterval); sbpTimerInterval = null;
+                    stopSbpPolling(); closeSbpModal();
+                    showToast("Время ожидания оплаты истекло. Попробуйте снова.", "error");
+                    payButton.disabled = false;
+                  } else { updateTimerDisplay(); }
+                }, 1000);
+              }
+            }
+          } catch (e) {}
         }
       }
     });
@@ -2723,18 +2756,35 @@
       }
     }
 
-    // Patch openCart/closeCart with focus trap + iOS fix
+    // ---- BackButton handling for modals ----
+    function showBackButton(handler) {
+      if (tg && tg.BackButton) {
+        try {
+          tg.BackButton.offClick(); // clear previous
+          tg.BackButton.onClick(handler);
+          tg.BackButton.show();
+        } catch (e) {}
+      }
+    }
+    function hideBackButton() {
+      if (tg && tg.BackButton) {
+        try { tg.BackButton.offClick(); tg.BackButton.hide(); } catch (e) {}
+      }
+    }
+
+    // Patch openCart/closeCart with focus trap + iOS fix + BackButton
     const _origOpenCart = openCart;
     openCart = function() {
       _origOpenCart();
       lockBodyScroll();
       trapFocus(cartModal);
+      showBackButton(() => closeCart());
     };
     const _origCloseCart = closeCart;
     closeCart = function() {
       releaseFocusTrap(cartModal);
       _origCloseCart();
-      if (!sbpModal.classList.contains("open")) unlockBodyScroll();
+      if (!sbpModal.classList.contains("open")) { unlockBodyScroll(); hideBackButton(); }
     };
 
     // ---- Fetch app config (payment timeout) ----
@@ -2820,7 +2870,7 @@
         if (!raw) return;
         const pending = JSON.parse(raw);
         // Expire after 15 minutes
-        if (!pending.order_id || !pending.ts || Date.now() - pending.ts > 15 * 60 * 1000) {
+        if (!pending.order_id || !pending.ts || !pending.total || !pending.public_order_number || Date.now() - pending.ts > 15 * 60 * 1000) {
           localStorage.removeItem("cafe_pending_payment");
           return;
         }
@@ -2840,6 +2890,8 @@
         sbpSuccessScreen.style.display = "none";
         sbpModal.classList.add("open");
         document.body.style.overflow = "hidden";
+        lockBodyScroll();
+        showBackButton(() => closeSbpModal());
         const elapsedSec = Math.floor((Date.now() - pending.ts) / 1000);
         const remaining = paymentTimeoutSeconds - elapsedSec;
         if (remaining <= 0) {
