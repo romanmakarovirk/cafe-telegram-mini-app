@@ -539,7 +539,19 @@ async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
         with db_session() as session:
             order_check = fetch_order(session, order_id)
             expected_kopecks = order_check.total_amount * 100
-            if result.amount is not None and result.amount != expected_kopecks:
+            if result.amount is None:
+                logging.error(
+                    "SBP check_status: amount=None for paid order %d, blocking",
+                    order_id,
+                )
+                audit_log("AMOUNT_NULL_CHECK_STATUS", order_id=order_id)
+                from bot_handlers import alert_admin
+                await alert_admin(
+                    f"⚠️ SBP check_status: заказ #{order_check.public_order_number} оплачен, "
+                    f"но SBP API не вернул сумму. Требуется ручная проверка."
+                )
+                return {"status": "check_error", "error": "Не удалось проверить сумму платежа. Обратитесь к кассиру."}
+            if result.amount != expected_kopecks:
                 order_check.payment_status = "amount_mismatch"
                 order_check.updated_at = now_utc()
                 session.commit()

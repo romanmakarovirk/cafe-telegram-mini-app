@@ -320,7 +320,18 @@ async def _sbp_payment_polling_worker() -> None:
 
                     if result.is_paid:
                         expected_kopecks = total_amount * 100
-                        if result.amount is not None and result.amount != expected_kopecks:
+                        if result.amount is None:
+                            logging.error(
+                                "SBP polling: amount=None for paid order %d, skipping — cannot verify",
+                                order_id,
+                            )
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"⚠️ SBP polling: заказ #{order_id} оплачен, но SBP API не вернул сумму. "
+                                f"Требуется ручная проверка."
+                            )
+                            continue
+                        if result.amount != expected_kopecks:
                             with database.db_session() as session:
                                 order = session.scalars(
                                     select(Order).where(
