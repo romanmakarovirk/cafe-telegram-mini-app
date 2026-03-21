@@ -3,19 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light">
   <title>Кафе | Тестовый онлайн-заказ</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --tg-bg-color: var(--tg-theme-bg-color, #f7efe4);
-      --tg-text-color: var(--tg-theme-text-color, #231913);
-      --tg-hint-color: var(--tg-theme-hint-color, #7c6858);
-      --tg-link-color: var(--tg-theme-link-color, #2481cc);
-      --tg-button-color: var(--tg-theme-button-color, #19624a);
-      --tg-button-text-color: var(--tg-theme-button-text-color, #ffffff);
-      --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #efebe7);
+      --tg-bg-color: #f7efe4;
+      --tg-text-color: #231913;
+      --tg-hint-color: #7c6858;
+      --tg-link-color: #2481cc;
+      --tg-button-color: #19624a;
+      --tg-button-text-color: #ffffff;
+      --tg-secondary-bg: #efebe7;
       --surface: rgba(255, 251, 246, 0.92);
       --surface-strong: rgba(255, 247, 239, 0.98);
       --line: rgba(88, 59, 41, 0.12);
@@ -33,25 +34,6 @@
       --radius-xl: 30px;
       --radius-lg: 24px;
       --radius-md: 18px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --surface: rgba(44, 44, 46, 0.92);
-        --surface-strong: rgba(54, 54, 56, 0.98);
-        --line: rgba(255, 255, 255, 0.1);
-        --shadow: 0 22px 60px rgba(0, 0, 0, 0.3);
-        --accent-soft-bg: rgba(46, 204, 113, 0.12);
-        --accent-soft-text: #5dbb8a;
-        --text-primary: #f0f0f0;
-        --text-secondary: #b0b0b0;
-        --text-tertiary: #a0a0a0;
-        --text-muted: #888;
-        --card-bg: rgba(58, 58, 60, 0.72);
-        --input-bg: rgba(58, 58, 60, 0.7);
-        --skeleton-base: #3a3a3c;
-        --skeleton-shine: #48484a;
-      }
     }
 
     * {
@@ -81,15 +63,6 @@
       background:
         linear-gradient(120deg, rgba(255, 255, 255, 0.08), transparent 35%),
         linear-gradient(320deg, rgba(76, 42, 27, 0.08), transparent 32%);
-    }
-
-    @media (prefers-color-scheme: dark) {
-      body {
-        background: var(--tg-bg-color);
-      }
-      body::before {
-        display: none;
-      }
     }
 
     a {
@@ -205,21 +178,10 @@
       backdrop-filter: blur(16px);
     }
 
-    @media (prefers-color-scheme: dark) {
-      .panel {
-        border-color: var(--line);
-        backdrop-filter: none;
-      }
-    }
-
     .panel p {
       margin: 0;
       line-height: 1.55;
       color: #5f4c40;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .panel p { color: var(--text-secondary); }
     }
 
     .panel-title {
@@ -242,10 +204,6 @@
       color: #205441;
       font-weight: 700;
       font-size: 13px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .chip { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
     }
 
     .category-rail {
@@ -275,15 +233,6 @@
       font-weight: 700;
       color: #4d3a2f;
       transition: background 0.2s, color 0.2s, border-color 0.2s;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .category-link {
-        background: var(--surface);
-        border-color: var(--line);
-        box-shadow: var(--shadow);
-        color: var(--text-primary);
-      }
     }
 
     .category-link.active {
@@ -319,10 +268,6 @@
       line-height: 1.15;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .section-head h2 { color: var(--text-primary); }
-    }
-
     .section-head p {
       margin: 8px 0 0;
       color: var(--tg-hint-color);
@@ -351,10 +296,6 @@
       object-fit: cover;
       background: #ebded1;
       flex-shrink: 0;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .card img { background: var(--skeleton-base); }
     }
 
     .card-body {
@@ -398,10 +339,6 @@
       font-size: 22px;
       font-weight: 800;
       color: #1c513d;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .price { color: var(--accent-soft-text); }
     }
 
     .add-button,
@@ -696,13 +633,6 @@
       box-shadow: 0 24px 70px rgba(34, 22, 15, 0.3);
     }
 
-    @media (prefers-color-scheme: dark) {
-      .modal-sheet {
-        background: var(--surface-strong);
-        box-shadow: var(--shadow);
-      }
-    }
-
     .modal-head {
       display: flex;
       align-items: start;
@@ -713,10 +643,6 @@
 
     .modal-head h2 {
       color: #323232;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .modal-head h2 { color: var(--text-primary); }
     }
 
     .modal-head p {
@@ -730,10 +656,6 @@
       background: rgba(88, 59, 41, 0.08);
       color: #4f3c30;
       font-weight: 700;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .ghost-button { background: var(--accent-soft-bg); color: var(--text-secondary); }
     }
 
     .cart-items {
@@ -750,10 +672,6 @@
       border-radius: 20px;
       background: rgba(255, 255, 255, 0.72);
       border: 1px solid var(--line);
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .cart-item { background: var(--card-bg); }
     }
 
     .cart-item h4 {
@@ -1041,10 +959,6 @@
       background: #fff;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .sbp-sheet { background: var(--surface-strong); }
-    }
-
     .sbp-screen {
       display: flex;
       flex-direction: column;
@@ -1061,10 +975,6 @@
       border-bottom: 1px solid #f0f0f0;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .sbp-header { border-bottom-color: var(--line); }
-    }
-
     .sbp-logo {
       height: 32px;
     }
@@ -1078,10 +988,6 @@
       font-size: 14px;
       border: none;
       cursor: pointer;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .sbp-close-btn { background: var(--accent-soft-bg); color: var(--text-secondary); }
     }
 
     .sbp-amount-display {
@@ -1311,16 +1217,6 @@
     .closed-card .hours-line {
       margin-top: 16px; padding: 12px 16px; border-radius: 14px;
       background: rgba(25, 98, 74, 0.08); color: #205441; font-weight: 700; font-size: 14px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .closed-card {
-        background: var(--surface-strong);
-        box-shadow: var(--shadow);
-      }
-      .closed-card h2 { color: var(--text-primary); }
-      .closed-card p { color: var(--text-tertiary); }
-      .closed-card .hours-line { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
     }
 
     .closing-warning {
@@ -1561,49 +1457,6 @@
       .skeleton-body { padding: 8px 10px 10px; }
     }
 
-    /* ── Dark mode: comprehensive overrides ─────────────────────── */
-    @media (prefers-color-scheme: dark) {
-      .card-body h3 { color: var(--text-primary); }
-      .card-body p { color: var(--text-tertiary); }
-      .history-order-header strong { color: var(--text-primary); }
-      .history-items { color: var(--text-tertiary); }
-      .history-repeat-btn { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
-      .history-repeat-btn:hover { background: var(--accent-soft-bg); opacity: 0.8; }
-      .skeleton-img { background: linear-gradient(90deg, var(--skeleton-base) 25%, var(--skeleton-shine) 50%, var(--skeleton-base) 75%); background-size: 200% 100%; }
-      .skeleton-line { background: linear-gradient(90deg, var(--skeleton-base) 25%, var(--skeleton-shine) 50%, var(--skeleton-base) 75%); background-size: 200% 100%; }
-      .order-comment-area { background: var(--input-bg); }
-      .order-comment-area::placeholder { color: var(--text-muted); }
-      .empty-state { border-color: var(--line); color: var(--text-secondary); background: var(--surface); }
-      .loader, .error-box { background: var(--surface); color: var(--text-secondary); }
-      .cart-item h4 { color: var(--text-primary); }
-      .cart-item p { color: var(--text-tertiary); }
-      .qty-panel { background: var(--accent-soft-bg); }
-      .variant-pill { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
-      .variant-pill.selected { background: var(--accent-soft-bg); }
-      .category-note { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
-      .global-note { color: var(--accent-soft-text); }
-      .search-clear { background: var(--accent-soft-bg); }
-      .review-card h3 { color: var(--text-primary); }
-      .review-card > p { color: var(--tg-hint-color); }
-      .review-star { color: var(--text-muted); }
-      .review-star.active { background: var(--accent-soft-bg); }
-      .review-comment { background: var(--input-bg); }
-      .review-comment::placeholder { color: var(--text-muted); }
-      .review-dismiss { color: var(--tg-hint-color); }
-      .review-thanks { color: var(--accent-soft-text); }
-      .sbp-processing-text { color: var(--text-primary); }
-      .sbp-processing-hint { color: var(--text-muted); }
-      .sbp-success-title { color: var(--text-primary); }
-      .sbp-success-order { color: var(--text-muted); }
-      .sbp-success-hint { color: var(--text-muted); }
-      .sbp-qr-hint { color: var(--text-muted); }
-      .sbp-amount-label { color: var(--text-muted); }
-      .sbp-amount-value { color: var(--text-primary); }
-      .sbp-order-info { color: var(--text-muted); }
-      .sbp-timer { background: var(--accent-soft-bg); }
-      .sbp-processing-animation { border-color: var(--line); border-top-color: #7B61FF; }
-      .closing-warning { color: #e67e22; }
-    }
   </style>
 </head>
 <body>
