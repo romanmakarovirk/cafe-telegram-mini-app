@@ -409,6 +409,12 @@ async def create_order(payload: CreateOrderRequest, request: Request) -> dict[st
                         )
                     )
 
+                if total <= 0:
+                    session.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Сумма заказа должна быть больше 0.",
+                    )
                 if total > MAX_ORDER_TOTAL_RUB:
                     session.rollback()
                     raise HTTPException(
@@ -524,8 +530,8 @@ async def sbp_check_status(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_
         if order.payment_status == "paid":
             return {"status": "paid", **serialize_order(order)}
 
-        if not order.gateway_order_id:
-            return {"status": "no_payment"}
+        if not order.gateway_order_id or order.gateway_order_id == "creating":
+            return {"status": "creating" if order.gateway_order_id == "creating" else "no_payment"}
 
         gateway_order_id = order.gateway_order_id
 
@@ -654,32 +660,31 @@ async def sbp_callback(request: Request) -> dict[str, str]:
                     f"(SBP API недоступен). Polling worker подхватит."
                 )
                 return {"status": "ok"}
-            if verify_result.amount is not None:
-                if verify_result.amount != expected_kopecks:
-                    # 3. Amount mismatch — снова берём lock для обновления статуса
-                    with db_session() as session:
-                        order = session.scalars(
-                            select(Order).where(Order.id == order_id_to_process).with_for_update()
-                        ).first()
-                        if order and order.payment_status not in ("paid", "amount_mismatch"):
-                            logging.critical(
-                                "CALLBACK AMOUNT MISMATCH: order %d expected %d, got %d",
-                                order.id, expected_kopecks, verify_result.amount,
-                            )
-                            order.payment_status = "amount_mismatch"
-                            order.updated_at = now_utc()
-                            session.commit()
-                            audit_log("AMOUNT_MISMATCH", order_id=order.id,
-                                      expected=expected_kopecks, got=verify_result.amount)
-                            from bot_handlers import alert_admin
-                            await alert_admin(
-                                f"AMOUNT MISMATCH в callback! Заказ #{order.public_order_number}: "
-                                f"ожидали {expected_kopecks} коп, получили {verify_result.amount} коп. "
-                                f"Заказ помечен для ручного разбора."
-                            )
-                        else:
-                            session.commit()
-                    return {"status": "ok"}
+            if verify_result.amount != expected_kopecks:
+                # 3. Amount mismatch — снова берём lock для обновления статуса
+                with db_session() as session:
+                    order = session.scalars(
+                        select(Order).where(Order.id == order_id_to_process).with_for_update()
+                    ).first()
+                    if order and order.payment_status not in ("paid", "amount_mismatch"):
+                        logging.critical(
+                            "CALLBACK AMOUNT MISMATCH: order %d expected %d, got %d",
+                            order.id, expected_kopecks, verify_result.amount,
+                        )
+                        order.payment_status = "amount_mismatch"
+                        order.updated_at = now_utc()
+                        session.commit()
+                        audit_log("AMOUNT_MISMATCH", order_id=order.id,
+                                  expected=expected_kopecks, got=verify_result.amount)
+                        from bot_handlers import alert_admin
+                        await alert_admin(
+                            f"AMOUNT MISMATCH в callback! Заказ #{order.public_order_number}: "
+                            f"ожидали {expected_kopecks} коп, получили {verify_result.amount} коп. "
+                            f"Заказ помечен для ручного разбора."
+                        )
+                    else:
+                        session.commit()
+                return {"status": "ok"}
 
             await _process_paid_order(order_id_to_process)
             audit_log("CALLBACK_PAID", order_id=order_id_to_process, md_order=md_order)

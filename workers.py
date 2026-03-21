@@ -200,12 +200,24 @@ async def _fiscal_retry_worker() -> None:
 
                 for fq in pending:
                     parent_order = session.get(Order, fq.order_id)
-                    if parent_order and parent_order.status == "cancelled":
+                    if parent_order and parent_order.status == "cancelled" and \
+                            parent_order.payment_status not in ("refunded", "refund_pending", "refund_failed"):
                         fq.status = "failed"
                         fq.last_error = "Order cancelled — fiscal retry skipped"
                         session.commit()
                         logging.info("Fiscal retry: пропуск отменённого заказа %d", fq.order_id)
                         continue
+
+                    # sell_refund нельзя обработать раньше sell (54-ФЗ)
+                    if fq.operation == "sell_refund":
+                        if parent_order and not parent_order.fiscal_prepayment_uuid:
+                            fq.next_retry_at = database.now_utc() + timedelta(minutes=5)
+                            session.commit()
+                            logging.info(
+                                "Fiscal retry: sell_refund для заказа %d отложен — ждём sell чек",
+                                fq.order_id,
+                            )
+                            continue
 
                     fq.status = "processing"
                     fq.attempts += 1
@@ -256,6 +268,18 @@ async def _fiscal_retry_worker() -> None:
                                 "Fiscal retry: ошибка для заказа %d (попытка %d): %s",
                                 fq.order_id, fq.attempts, fq.last_error,
                             )
+                    except (json_module.JSONDecodeError, KeyError) as exc:
+                        fq.status = "failed"
+                        fq.last_error = f"Corrupt payload: {str(exc)[:200]}"
+                        logging.critical(
+                            "Fiscal retry: corrupt payload for order %d, marking failed: %s",
+                            fq.order_id, fq.last_error,
+                        )
+                        from bot_handlers import alert_admin
+                        await alert_admin(
+                            f"⚠️ FiscalQueue #{fq.id} (заказ {fq.order_id}): повреждённый payload, "
+                            f"требуется ручное исправление."
+                        )
                     except Exception as exc:
                         fq.status = "pending"
                         fq.last_error = str(exc)[:500]
