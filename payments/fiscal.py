@@ -290,6 +290,27 @@ class AtolOnlineClient:
             error_text = e.response.text[:500]
             logger.error("АТОЛ sell HTTP %s: %s", e.response.status_code, error_text)
 
+            # Duplicate external_id — чек уже создан (crash recovery)
+            if e.response.status_code == 400:
+                try:
+                    err_data = e.response.json()
+                    err_obj = err_data.get("error", {})
+                    err_code = err_obj.get("code", 0)
+                    # АТОЛ code 30 = "external_id уже используется"
+                    if err_code == 30 or "external_id" in str(err_obj.get("text", "")).lower():
+                        logger.warning(
+                            "АТОЛ sell: duplicate external_id %s — чек уже создан, считаем success",
+                            external_id,
+                        )
+                        dup_uuid = err_data.get("uuid", "")
+                        return FiscalResult(
+                            success=True,
+                            uuid=dup_uuid,
+                            status="duplicate",
+                        )
+                except Exception:
+                    pass  # not a duplicate, fall through to normal error handling
+
             # Если 401 — сбрасываем токен и пробуем ещё раз (один retry)
             if e.response.status_code == 401:
                 self._token = AtolToken()
@@ -412,7 +433,28 @@ class AtolOnlineClient:
                 status=data.get("status", ""),
             )
 
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        except httpx.HTTPStatusError as e:
+            # Duplicate external_id — чек возврата уже создан (crash recovery)
+            if e.response.status_code == 400:
+                try:
+                    err_data = e.response.json()
+                    err_obj = err_data.get("error", {})
+                    err_code = err_obj.get("code", 0)
+                    if err_code == 30 or "external_id" in str(err_obj.get("text", "")).lower():
+                        logger.warning(
+                            "АТОЛ sell_refund: duplicate external_id %s — считаем success",
+                            external_id,
+                        )
+                        return FiscalResult(
+                            success=True,
+                            uuid=err_data.get("uuid", ""),
+                            status="duplicate",
+                        )
+                except Exception:
+                    pass
+            logger.error("АТОЛ sell_refund HTTP ошибка: %s", e)
+            return FiscalResult(success=False, error=str(e))
+        except httpx.RequestError as e:
             logger.error("АТОЛ sell_refund ошибка: %s", e)
             return FiscalResult(success=False, error=str(e))
 
