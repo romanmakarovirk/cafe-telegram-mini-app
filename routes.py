@@ -502,7 +502,9 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
 
     if not result.success:
         logging.error("SBP create payment failed for order %d: %s", order_id, result.error_message)
-        raise HTTPException(status_code=502, detail="Ошибка создания платежа. Попробуйте ещё раз.")
+        from bot_handlers import alert_admin
+        await alert_admin(f"SBP create-payment failed: order #{order_id}, error: {result.error_message}")
+        raise HTTPException(status_code=502, detail="Платёжная система временно недоступна. Попробуйте через 1-2 минуты.")
 
     return {
         "status": "created",

@@ -2301,13 +2301,22 @@
 
     function startSbpPolling() {
       stopSbpPolling();
+      let pollErrorCount = 0;
       sbpPollingInterval = setInterval(async () => {
         if (!currentPaymentOrder) return;
         try {
           const resp = await fetch(`/api/sbp/check-status/${currentPaymentOrder.order_id}`, {
             headers: apiHeaders(),
           });
-          if (!resp.ok) return;
+          if (!resp.ok) {
+            pollErrorCount++;
+            if (pollErrorCount >= 3) {
+              showToast("Не удалось проверить статус оплаты. Попробуйте обновить страницу.", "error");
+              stopSbpPolling();
+            }
+            return;
+          }
+          pollErrorCount = 0;
           const data = await resp.json();
 
           if (data.status === "paid") {
@@ -2319,6 +2328,11 @@
             showToast("Время на оплату истекло. Пожалуйста, оформите заказ заново.", "error");
           }
         } catch (e) {
+          pollErrorCount++;
+          if (pollErrorCount >= 3) {
+            showToast("Не удалось проверить статус оплаты. Попробуйте обновить страницу.", "error");
+            stopSbpPolling();
+          }
           console.warn("SBP polling error:", e);
         }
       }, 3000);

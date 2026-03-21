@@ -97,13 +97,14 @@ class AtolOnlineClient:
 
     # ----- Авторизация -----
 
-    async def _get_token(self) -> str:
+    async def _get_token(self) -> str | None:
         """
         Получает токен авторизации.
         POST /possystem/v4/getToken
         Body: {"login": "...", "pass": "..."}
         Ответ: {"token": "...", "error": null}
         Токен действует 24 часа.
+        Возвращает None при ошибке (вместо raise — позволяет caller обработать gracefully).
         """
         # Fast path without lock
         if self._token.is_valid:
@@ -144,10 +145,10 @@ class AtolOnlineClient:
 
         except httpx.HTTPStatusError as e:
             logger.error("АТОЛ getToken HTTP %s: %s", e.response.status_code, e.response.text)
-            raise
+            return None
         except httpx.RequestError as e:
             logger.error("АТОЛ getToken сетевая ошибка: %s", e)
-            raise
+            return None
 
     # ----- Операции с чеками -----
 
@@ -182,6 +183,8 @@ class AtolOnlineClient:
             return FiscalResult(success=False, error="АТОЛ Онлайн не настроен")
 
         token = await self._get_token()
+        if token is None:
+            return FiscalResult(success=False, error="АТОЛ: не удалось получить токен авторизации")
         client = await self._get_client()
 
         # Формируем external_id (уникальный для каждого чека)
@@ -361,6 +364,8 @@ class AtolOnlineClient:
             return FiscalResult(success=False, error="АТОЛ Онлайн не настроен")
 
         token = await self._get_token()
+        if token is None:
+            return FiscalResult(success=False, error="АТОЛ: не удалось получить токен авторизации")
         client = await self._get_client()
 
         external_id = f"order-{order_id}-refund"
@@ -476,6 +481,8 @@ class AtolOnlineClient:
             return FiscalResult(success=False, error="АТОЛ Онлайн не настроен")
 
         token = await self._get_token()
+        if token is None:
+            return FiscalResult(success=False, error="АТОЛ: не удалось получить токен авторизации")
         client = await self._get_client()
 
         url = f"{self._base_url}/{ATOL_GROUP_CODE}/report/{receipt_uuid}"
