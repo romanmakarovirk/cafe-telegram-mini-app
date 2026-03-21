@@ -25,14 +25,14 @@ async def _keep_alive_ping() -> None:
     await asyncio.sleep(KEEPALIVE_STARTUP_DELAY_SECONDS)
     url = f"{APP_BASE_URL}/healthz"
     logging.info("Keep-alive started: pinging %s every %d sec", url, KEEPALIVE_INTERVAL_SECONDS)
-    while True:
-        try:
-            async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession() as s:
+        while True:
+            try:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                     logging.info("Keep-alive ping: %s", r.status)
-        except Exception as exc:
-            logging.warning("Keep-alive ping failed: %s", exc)
-        await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
+            except Exception as exc:
+                logging.warning("Keep-alive ping failed: %s", exc)
+            await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
 
 
 async def _stoplist_auto_enable_worker() -> None:

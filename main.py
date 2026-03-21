@@ -167,6 +167,10 @@ async def lifespan(_: FastAPI):
                 await _bot_setup_module.bot_polling_task
         if _bot_setup_module.bot is not None:
             await _bot_setup_module.bot.session.close()
+        from payments.fiscal import atol_client
+        from payments.sbp import sbp_client
+        await atol_client.close()
+        await sbp_client.close()
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────

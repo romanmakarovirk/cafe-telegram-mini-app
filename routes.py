@@ -1457,7 +1457,7 @@ async def submit_review(payload: SubmitReviewRequest, request: Request) -> dict[
             order_id=payload.order_id,
             telegram_user_id=verified_user_id,
             rating=payload.rating,
-            comment=clean_comment,
+            comment=clean_comment[:1000] if clean_comment else "",
             created_at=now_utc(),
         )
         session.add(review)
