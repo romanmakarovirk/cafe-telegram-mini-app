@@ -5434,6 +5434,78 @@ class TestStuckRefundAutoRetry(_E2ETestBase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Expired order resurrection — callback/polling после таймаута
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestExpiredOrderResurrection(_E2ETestBase):
+    """Expired заказ воскрешается если деньги реально пришли."""
+
+    @pytest.mark.asyncio
+    async def test_callback_resurrects_expired_order(self):
+        """SBP callback с deposited для expired заказа → _process_paid_order вызван."""
+        m = self.m
+        oid = self._create_test_order(
+            status="cancelled", payment_status="expired",
+            gateway_order_id="gw-expired-1",
+        )
+
+        mock_process = AsyncMock()
+        mock_check = AsyncMock(return_value=MagicMock(
+            success=True, amount=1200 * 100, is_paid=True,
+        ))
+
+        from fastapi.testclient import TestClient
+        client = TestClient(m.app, raise_server_exceptions=False)
+
+        with patch("payments.sbp.verify_callback", return_value=True), \
+             patch("payments.sbp.check_sbp_payment", mock_check), \
+             patch("routes._process_paid_order", mock_process), \
+             patch("bot_handlers.alert_admin", AsyncMock()):
+            resp = client.post(
+                "/api/sbp/callback"
+                "?mdOrder=gw-expired-1&orderNumber=test"
+                "&operation=deposited&status=1&checksum=mocked",
+            )
+            assert resp.status_code == 200
+            mock_process.assert_awaited_once_with(oid)
+
+    @pytest.mark.asyncio
+    async def test_polling_finds_expired_paid_order(self):
+        """Polling worker обнаруживает оплаченный expired заказ."""
+        m = self.m
+        from config import ORDER_PAYMENT_TIMEOUT_MINUTES
+        oid = self._create_test_order(
+            status="cancelled", payment_status="expired",
+            gateway_order_id="gw-expired-poll",
+        )
+
+        # Сделать заказ "недавно expired" — в окне проверки polling worker
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(
+                minutes=ORDER_PAYMENT_TIMEOUT_MINUTES + 5
+            )
+            session.commit()
+
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES)
+            floor = datetime.now(timezone.utc) - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES * 2)
+            expired = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.payment_status == "expired",
+                    m.Order.gateway_order_id.isnot(None),
+                    m.Order.gateway_order_id != "creating",
+                    m.Order.updated_at > floor,
+                    m.Order.updated_at < cutoff,
+                )
+            ).all()
+            assert len(expired) == 1, f"Expected 1 expired order, got {len(expired)}"
+            assert expired[0].id == oid
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Smoke-тесты переключения TEST_MODE → Production URL
 # ══════════════════════════════════════════════════════════════════════════════
 

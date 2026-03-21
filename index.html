@@ -1889,7 +1889,10 @@
       try {
         const saved = localStorage.getItem("cafe_cart");
         if (saved) {
-          JSON.parse(saved).forEach(([id, qty]) => cart.set(id, qty));
+          JSON.parse(saved).forEach(([id, qty]) => {
+            const q = Math.max(1, Math.floor(Number(qty)));
+            if (Number.isFinite(q) && q <= 50) cart.set(id, q);
+          });
         }
       } catch (e) { /* ignore */ }
     }
@@ -2479,14 +2482,16 @@
         showToast("Откройте приложение из Telegram для оформления заказа.", "error");
         return;
       }
+      if (payButton.disabled) return;
+      payButton.disabled = true;
       const items = Array.from(cart.entries()).map(([itemId, quantity]) => ({
-        item_id: Number(itemId), quantity
+        item_id: Number(itemId), quantity: Math.max(1, Math.floor(quantity))
       }));
       if (!items.length) {
         showToast("Корзина пустая.", "error");
+        payButton.disabled = false;
         return;
       }
-      payButton.disabled = true;
       const comment = (document.getElementById("order-comment").value || "").trim();
       try {
         const createResponse = await fetch("/api/create_order", {
@@ -2725,6 +2730,7 @@
                 payButton.disabled = false;
               } else {
                 updateTimerDisplay();
+                if (sbpTimerInterval) { clearInterval(sbpTimerInterval); sbpTimerInterval = null; }
                 sbpTimerInterval = setInterval(() => {
                   sbpTimeLeft--;
                   if (sbpTimeLeft <= 0) {

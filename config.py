@@ -58,6 +58,20 @@ INITIAL_ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or 0) or None
 # ── Security settings ─────────────────────────────────────────────────────
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
 
+
+def _safe_int(env_name: str, default: int, min_val: int = 1) -> int:
+    """Parse int from env var with fallback to default on error or out-of-range."""
+    raw = os.getenv(env_name, str(default))
+    try:
+        val = int(raw)
+        if val < min_val:
+            logging.warning("%s=%d is below minimum %d, using default %d", env_name, val, min_val, default)
+            return default
+        return val
+    except (ValueError, TypeError):
+        logging.warning("%s=%r is not a valid integer, using default %d", env_name, raw, default)
+        return default
+
 ALLOWED_ADMIN_IDS: set[int] = set()
 _raw_admin_ids = os.getenv("ALLOWED_ADMIN_IDS", "").strip()
 if _raw_admin_ids:
@@ -69,11 +83,11 @@ if _raw_admin_ids:
 if INITIAL_ADMIN_CHAT_ID:
     ALLOWED_ADMIN_IDS.add(INITIAL_ADMIN_CHAT_ID)
 
-MAX_ITEMS_PER_ORDER = int(os.getenv("MAX_ITEMS_PER_ORDER", "100"))
-MAX_ORDER_TOTAL_RUB = int(os.getenv("MAX_ORDER_TOTAL_RUB", "50000"))
-ORDER_PAYMENT_TIMEOUT_MINUTES = int(os.getenv("ORDER_PAYMENT_TIMEOUT_MINUTES", "15"))
+MAX_ITEMS_PER_ORDER = _safe_int("MAX_ITEMS_PER_ORDER", 100)
+MAX_ORDER_TOTAL_RUB = _safe_int("MAX_ORDER_TOTAL_RUB", 50000)
+ORDER_PAYMENT_TIMEOUT_MINUTES = _safe_int("ORDER_PAYMENT_TIMEOUT_MINUTES", 15)
 KITCHEN_API_KEY = os.getenv("KITCHEN_API_KEY", "").strip()
-DEFAULT_PREP_TIME_MINUTES = int(os.getenv("DEFAULT_PREP_TIME_MINUTES", "20"))
+DEFAULT_PREP_TIME_MINUTES = _safe_int("DEFAULT_PREP_TIME_MINUTES", 20)
 
 # ── Named Constants (вместо magic numbers) ────────────────────────────────
 AUTH_DATE_MAX_AGE_SECONDS = 86400          # Срок жизни Telegram initData (24ч)
@@ -97,10 +111,14 @@ def validate_production_config() -> None:
     sbp_configured = bool(os.getenv("SBP_USERNAME") or os.getenv("SBP_TOKEN"))
     if sbp_configured:
         required_in_prod["SBP_CALLBACK_SECRET"] = os.getenv("SBP_CALLBACK_SECRET", "")
+        if os.getenv("SBP_USERNAME") and not os.getenv("SBP_TOKEN"):
+            required_in_prod["SBP_PASSWORD"] = os.getenv("SBP_PASSWORD", "")
 
     atol_configured = bool(os.getenv("ATOL_LOGIN"))
     if atol_configured:
         required_in_prod["ATOL_INN"] = os.getenv("ATOL_INN", "")
+        required_in_prod["ATOL_PASSWORD"] = os.getenv("ATOL_PASSWORD", "")
+        required_in_prod["ATOL_GROUP_CODE"] = os.getenv("ATOL_GROUP_CODE", "")
 
     missing = [name for name, val in required_in_prod.items() if not val]
 
@@ -115,6 +133,13 @@ def validate_production_config() -> None:
             raise SystemExit(1)
         else:
             logging.warning("⚠️  DEV MODE: %s (OK for development)", msg)
+
+    # Лог активных режимов — видно сразу при старте какой режим включён
+    sbp_test = os.getenv("SBP_TEST_MODE", "true").lower() in ("true", "1", "yes")
+    atol_test = os.getenv("ATOL_TEST_MODE", "true").lower() in ("true", "1", "yes")
+    logging.info("Payment modes: SBP_TEST_MODE=%s, ATOL_TEST_MODE=%s", sbp_test, atol_test)
+    if not DEV_MODE and (sbp_test or atol_test):
+        logging.warning("⚠️  SANDBOX MODE ACTIVE in production — переключите TEST_MODE на Render")
 
 
 def normalize_database_url(raw_url: str) -> str:
@@ -131,7 +156,7 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     ENGINE_KWARGS["connect_args"] = {"check_same_thread": False}
 else:
     # PostgreSQL connection pool settings for production
-    ENGINE_KWARGS["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
-    ENGINE_KWARGS["max_overflow"] = int(os.getenv("DB_MAX_OVERFLOW", "10"))
-    ENGINE_KWARGS["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT", "30"))
-    ENGINE_KWARGS["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    ENGINE_KWARGS["pool_size"] = _safe_int("DB_POOL_SIZE", 5)
+    ENGINE_KWARGS["max_overflow"] = _safe_int("DB_MAX_OVERFLOW", 10, min_val=0)
+    ENGINE_KWARGS["pool_timeout"] = _safe_int("DB_POOL_TIMEOUT", 30)
+    ENGINE_KWARGS["pool_recycle"] = _safe_int("DB_POOL_RECYCLE", 1800)

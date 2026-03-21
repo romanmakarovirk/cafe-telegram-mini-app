@@ -38,7 +38,7 @@ logger = logging.getLogger("integrations.accounting")
 FRESH_BASE_URL = os.getenv("FRESH_BASE_URL", "")
 FRESH_USERNAME = os.getenv("FRESH_USERNAME", "")
 FRESH_PASSWORD = os.getenv("FRESH_PASSWORD", "")
-FRESH_ENABLED = os.getenv("FRESH_ENABLED", "false").lower() == "true"
+FRESH_ENABLED = os.getenv("FRESH_ENABLED", "false").lower() in ("true", "1", "yes")
 FRESH_COUNTERPARTY = os.getenv("FRESH_COUNTERPARTY", "Розничный покупатель")
 FRESH_WAREHOUSE = os.getenv("FRESH_WAREHOUSE", "Основной склад")
 

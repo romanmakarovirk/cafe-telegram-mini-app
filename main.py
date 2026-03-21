@@ -98,6 +98,19 @@ async def lifespan(_: FastAPI):
     initialize_database()
     validate_production_config()
 
+    # Startup self-test: проверяем что ATOL credentials валидны
+    if not DEV_MODE:
+        try:
+            from payments.fiscal import atol_client
+            if atol_client.is_configured:
+                token = await atol_client._get_token()
+                if token:
+                    logging.info("ATOL startup check: OK (token получен)")
+                else:
+                    logging.error("ATOL startup check: FAILED (не удалось получить токен)")
+        except Exception as e:
+            logging.error("ATOL startup check error: %s", e)
+
     # Фоновые задачи
     stoplist_task = asyncio.create_task(_stoplist_auto_enable_worker())
     timeout_task = asyncio.create_task(_order_timeout_worker())

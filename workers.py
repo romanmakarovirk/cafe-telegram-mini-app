@@ -431,6 +431,47 @@ async def _sbp_payment_polling_worker() -> None:
                 except Exception:
                     logging.exception("SBP polling: ошибка проверки заказа %d", order_id)
 
+            # Проверяем expired заказы с gateway_order_id — деньги могли списаться
+            # после таймаута, но callback потерялся. Если оплачен — воскрешаем,
+            # если нет — ничего не делаем (Сбербанк сам отменит по своему таймауту).
+            with database.db_session() as session:
+                expired_cutoff = database.now_utc() - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES)
+                # Только недавно expired (не старше 2х таймаутов) — нет смысла проверять старые
+                expired_floor = database.now_utc() - timedelta(minutes=ORDER_PAYMENT_TIMEOUT_MINUTES * 2)
+                expired_orders = session.scalars(
+                    select(Order).where(
+                        Order.payment_status == "expired",
+                        Order.gateway_order_id.isnot(None),
+                        Order.gateway_order_id != "creating",
+                        Order.updated_at > expired_floor,
+                        Order.updated_at < expired_cutoff,
+                    ).limit(5)
+                ).all()
+                expired_to_check = [
+                    (o.id, o.gateway_order_id, o.total_amount, o.public_order_number)
+                    for o in expired_orders
+                ]
+
+            for oid, gw_oid, amount, onum in expired_to_check:
+                try:
+                    result = await check_sbp_payment(gw_oid)
+                    if not result.success:
+                        continue
+                    if result.is_paid:
+                        # Деньги списались после таймаута — воскрешаем заказ
+                        logging.warning(
+                            "SBP polling: expired заказ %d оплачен! Воскрешаем.", oid,
+                        )
+                        from routes import _process_paid_order
+                        await _process_paid_order(oid)
+                        from bot_handlers import alert_admin
+                        await alert_admin(
+                            f"Заказ #{onum} оплачен ПОСЛЕ таймаута (callback потерян). "
+                            f"Заказ автоматически воскрешён."
+                        )
+                except Exception:
+                    logging.exception("SBP polling: ошибка проверки expired заказа %d", oid)
+
         except Exception:
             logging.exception("Ошибка в SBP payment polling worker")
 
