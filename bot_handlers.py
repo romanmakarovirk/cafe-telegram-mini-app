@@ -161,43 +161,6 @@ VALID_STATUS_TRANSITIONS: dict[str, list[str]] = {
 }
 
 
-def _enqueue_phase2_retry(
-    order_id: int, order_number: int,
-    fiscal_items: list[dict], total_amount: int,
-) -> None:
-    """Enqueue Phase 2 (full_payment) fiscal receipt for retry."""
-    import json as json_module
-    try:
-        with database.db_session() as fq_session:
-            existing = fq_session.scalars(
-                select(FiscalQueue).where(
-                    FiscalQueue.order_id == order_id,
-                    FiscalQueue.operation == "sell_settlement",
-                    FiscalQueue.status.in_(["pending", "processing"]),
-                )
-            ).first()
-            if existing:
-                return
-            fq_session.add(FiscalQueue(
-                order_id=order_id,
-                order_number=order_number,
-                operation="sell_settlement",
-                payload_json=json_module.dumps({
-                    "items": fiscal_items,
-                    "total_amount": total_amount,
-                }),
-                status="pending",
-                attempts=1,
-                max_attempts=10,
-                created_at=database.now_utc(),
-                next_retry_at=database.now_utc() + timedelta(minutes=5),
-            ))
-            fq_session.commit()
-        logging.info("Phase 2 fiscal: order %d enqueued for retry", order_id)
-    except Exception:
-        logging.exception("Failed to enqueue Phase 2 fiscal for order %d", order_id)
-
-
 @bot_setup.router.callback_query(F.data.startswith("order:"))
 async def handle_order_status_change(callback: CallbackQuery) -> None:
     if callback.data is None or callback.message is None:

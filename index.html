@@ -2896,6 +2896,8 @@
         const remaining = paymentTimeoutSeconds - elapsedSec;
         if (remaining <= 0) {
           localStorage.removeItem("cafe_pending_payment");
+          closeSbpModal();
+          payButton.disabled = false;
           return;
         }
         sbpTimeLeft = remaining;
