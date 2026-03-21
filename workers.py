@@ -233,6 +233,7 @@ async def _fiscal_retry_worker() -> None:
                                 order_number=fq.order_number,
                                 items=payload["items"],
                                 total_amount=payload["total_amount"],
+                                payment_method=payload.get("payment_method", "prepayment"),
                             )
                         else:
                             # Чек продажи: prepayment (Phase 1) или full_payment (Phase 2)

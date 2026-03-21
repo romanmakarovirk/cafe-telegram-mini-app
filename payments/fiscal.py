@@ -583,6 +583,7 @@ async def refund_order(
     order_number: int,
     items: list[dict[str, Any]],
     total_amount: int,
+    payment_method: str = "prepayment",
     client_email: str = "",
     client_phone: str = "",
 ) -> FiscalResult:
@@ -592,6 +593,7 @@ async def refund_order(
             "name": item["name_snapshot"],
             "price": float(item["price_snapshot"]),
             "quantity": item["quantity"],
+            "payment_method": payment_method,
         }
         for item in items
     ]

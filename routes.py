@@ -791,15 +791,21 @@ async def _process_paid_order(order_id: int) -> None:
                                     OrderItem.order_id == stoplist_order_id
                                 ).all()
                             ]
-                            fiscal_payload = json_module.dumps({
+                            fiscal_payload_sell = json_module.dumps({
                                 "items": fiscal_items,
                                 "total_amount": refund_amount,
+                                "payment_method": "prepayment",
+                            })
+                            fiscal_payload_refund = json_module.dumps({
+                                "items": fiscal_items,
+                                "total_amount": refund_amount,
+                                "payment_method": "prepayment",
                             })
                             refund_session.add(FiscalQueue(
                                 order_id=stoplist_order_id,
                                 order_number=stoplist_order_number,
                                 operation="sell",
-                                payload_json=fiscal_payload,
+                                payload_json=fiscal_payload_sell,
                                 status="pending", attempts=0, max_attempts=10,
                                 created_at=now_utc(),
                                 next_retry_at=now_utc(),
@@ -808,7 +814,7 @@ async def _process_paid_order(order_id: int) -> None:
                                 order_id=stoplist_order_id,
                                 order_number=stoplist_order_number,
                                 operation="sell_refund",
-                                payload_json=fiscal_payload,
+                                payload_json=fiscal_payload_refund,
                                 status="pending", attempts=0, max_attempts=10,
                                 created_at=now_utc(),
                                 next_retry_at=now_utc() + timedelta(minutes=2),

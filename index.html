@@ -2840,7 +2840,27 @@
         sbpSuccessScreen.style.display = "none";
         sbpModal.classList.add("open");
         document.body.style.overflow = "hidden";
-        startSbpTimer();
+        const elapsedSec = Math.floor((Date.now() - pending.ts) / 1000);
+        const remaining = paymentTimeoutSeconds - elapsedSec;
+        if (remaining <= 0) {
+          localStorage.removeItem("cafe_pending_payment");
+          return;
+        }
+        sbpTimeLeft = remaining;
+        updateTimerDisplay();
+        sbpTimerInterval = setInterval(() => {
+          sbpTimeLeft--;
+          if (sbpTimeLeft <= 0) {
+            clearInterval(sbpTimerInterval);
+            sbpTimerInterval = null;
+            stopSbpPolling();
+            closeSbpModal();
+            showToast("Время ожидания оплаты истекло. Попробуйте снова.", "error");
+            payButton.disabled = false;
+            return;
+          }
+          updateTimerDisplay();
+        }, 1000);
         startSbpPolling();
       } catch (e) {
         localStorage.removeItem("cafe_pending_payment");
