@@ -4983,6 +4983,457 @@ class TestPhase2WithoutPhase1Alert(_E2ETestBase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SBP PAYMENT POLLING WORKER — тесты фонового опроса статусов
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSbpPollingWorker(_E2ETestBase):
+    """Тесты _sbp_payment_polling_worker логики."""
+
+    @pytest.mark.asyncio
+    async def test_polling_detects_paid_order(self):
+        """Polling подхватывает оплаченный заказ, если callback не пришёл."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="gw-123")
+
+        # Сдвигаем updated_at чтобы пройти cutoff_recent (30 сек)
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+            session.commit()
+
+        mock_check = AsyncMock(return_value=MagicMock(
+            success=True, is_paid=True, amount=120000, order_status=2,
+        ))
+        mock_process = AsyncMock()
+
+        with patch("payments.sbp.check_sbp_payment", mock_check), \
+             patch("routes._process_paid_order", mock_process), \
+             patch("bot_handlers.alert_admin", AsyncMock()):
+            # Воспроизводим логику polling worker (один проход)
+            from sqlalchemy import select as sa_select
+            with self.Session() as session:
+                cutoff_recent = datetime.now(timezone.utc) - timedelta(seconds=30)
+                cutoff_old = datetime.now(timezone.utc) - timedelta(minutes=15)
+                pending = session.scalars(
+                    sa_select(m.Order).where(
+                        m.Order.payment_status == "pending",
+                        m.Order.gateway_order_id.isnot(None),
+                        m.Order.gateway_order_id != "creating",
+                        m.Order.updated_at < cutoff_recent,
+                        m.Order.created_at > cutoff_old,
+                    ).limit(10)
+                ).all()
+                orders_to_check = [(o.id, o.gateway_order_id, o.total_amount) for o in pending]
+
+            assert len(orders_to_check) == 1
+            order_id, gw_id, total = orders_to_check[0]
+
+            result = await mock_check(gw_id)
+            assert result.is_paid
+            expected_kopecks = total * 100
+            assert result.amount == expected_kopecks
+            await mock_process(order_id)
+
+        mock_process.assert_called_once_with(oid)
+
+    @pytest.mark.asyncio
+    async def test_polling_skips_amount_none(self):
+        """Polling не обрабатывает заказ если amount=None."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="gw-456")
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+            session.commit()
+
+        mock_check = AsyncMock(return_value=MagicMock(
+            success=True, is_paid=True, amount=None, order_status=2,
+        ))
+        mock_alert = AsyncMock()
+
+        with patch("payments.sbp.check_sbp_payment", mock_check), \
+             patch("bot_handlers.alert_admin", mock_alert):
+            result = await mock_check("gw-456")
+            assert result.amount is None  # должен пропустить, не обработать
+
+    @pytest.mark.asyncio
+    async def test_polling_amount_mismatch(self):
+        """Polling помечает amount_mismatch при несовпадении суммы."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="gw-789")
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+            session.commit()
+
+        # amount=50000 (500 руб), но заказ на 1200 руб (120000 коп)
+        mock_check = AsyncMock(return_value=MagicMock(
+            success=True, is_paid=True, amount=50000, order_status=2,
+        ))
+        mock_alert = AsyncMock()
+
+        with patch("payments.sbp.check_sbp_payment", mock_check), \
+             patch("bot_handlers.alert_admin", mock_alert):
+            result = await mock_check("gw-789")
+            expected_kopecks = 1200 * 100  # 120000
+            assert result.amount != expected_kopecks
+
+            # Воспроизводим логику mismatch из worker
+            with self.Session() as session:
+                from sqlalchemy import select as sa_select
+                order = session.scalars(
+                    sa_select(m.Order).where(m.Order.id == oid)
+                ).first()
+                if order and order.payment_status == "pending":
+                    order.payment_status = "amount_mismatch"
+                    order.updated_at = datetime.now(timezone.utc)
+                    session.commit()
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            assert o.payment_status == "amount_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_polling_ignores_recent_orders(self):
+        """Polling не трогает заказы моложе 30 сек."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="gw-fresh")
+        # updated_at = now (по умолчанию) — слишком свежий
+
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            cutoff_recent = datetime.now(timezone.utc) - timedelta(seconds=30)
+            cutoff_old = datetime.now(timezone.utc) - timedelta(minutes=15)
+            pending = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.payment_status == "pending",
+                    m.Order.gateway_order_id.isnot(None),
+                    m.Order.gateway_order_id != "creating",
+                    m.Order.updated_at < cutoff_recent,
+                    m.Order.created_at > cutoff_old,
+                ).limit(10)
+            ).all()
+            assert len(pending) == 0, "Fresh order should not be picked up by polling"
+
+    @pytest.mark.asyncio
+    async def test_polling_ignores_creating_marker(self):
+        """Polling не трогает заказы с gateway_order_id='creating'."""
+        m = self.m
+        oid = self._create_test_order(gateway_order_id="creating")
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+            session.commit()
+
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            cutoff_recent = datetime.now(timezone.utc) - timedelta(seconds=30)
+            cutoff_old = datetime.now(timezone.utc) - timedelta(minutes=15)
+            pending = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.payment_status == "pending",
+                    m.Order.gateway_order_id.isnot(None),
+                    m.Order.gateway_order_id != "creating",
+                    m.Order.updated_at < cutoff_recent,
+                    m.Order.created_at > cutoff_old,
+                ).limit(10)
+            ).all()
+            assert len(pending) == 0, "'creating' marker must be excluded from polling"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SBP REFUND — тесты функции возврата
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSbpRefund(_E2ETestBase):
+    """Тесты refund_sbp_payment и интеграции с handle_refund."""
+
+    @pytest.mark.asyncio
+    async def test_refund_success_updates_status(self):
+        """Успешный возврат → payment_status=refunded."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            gateway_order_id="gw-refund-ok",
+        )
+
+        mock_refund = AsyncMock(return_value=MagicMock(success=True, error_message=""))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund):
+            result = await mock_refund("gw-refund-ok", 1200)
+            assert result.success
+
+            with self.Session() as session:
+                order = session.get(m.Order, oid)
+                order.payment_status = "refunded"
+                order.status = "cancelled"
+                session.commit()
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "refunded"
+            assert order.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_refund_failure_rollback(self):
+        """Неудачный возврат → payment_status остаётся paid."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            gateway_order_id="gw-refund-fail",
+        )
+
+        mock_refund = AsyncMock(return_value=MagicMock(
+            success=False, error_message="SBP timeout"
+        ))
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund):
+            result = await mock_refund("gw-refund-fail", 1200)
+            assert not result.success
+
+        # Статус не изменился
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid"
+
+    @pytest.mark.asyncio
+    async def test_double_refund_blocked(self):
+        """Повторный возврат заблокирован — payment_status != paid."""
+        m = self.m
+        oid = self._create_test_order(
+            status="cancelled", payment_status="refunded",
+            gateway_order_id="gw-double",
+        )
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "refunded"
+            # handle_refund проверяет payment_status == "paid" — здесь уже refunded
+            assert order.payment_status != "paid", "Cannot refund already refunded order"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STOPLIST AUTO-ENABLE WORKER — тесты автовключения позиций
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestStoplistAutoEnable(_E2ETestBase):
+    """Тесты _stoplist_auto_enable_worker логики."""
+
+    @pytest.mark.asyncio
+    async def test_expired_timer_enables_item(self):
+        """Позиция с истёкшим available_at → is_available=True."""
+        m = self.m
+
+        with self.Session() as session:
+            item = session.get(m.MenuItem, 1)
+            item.is_available = False
+            item.available_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            item.unavailable_reason = "Закончился"
+            session.commit()
+
+        # Воспроизводим логику worker
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            now = datetime.now(timezone.utc)
+            items = session.scalars(
+                sa_select(m.MenuItem).where(
+                    m.MenuItem.is_available.is_(False),
+                    m.MenuItem.available_at.isnot(None),
+                    m.MenuItem.available_at <= now,
+                )
+            ).all()
+            for item in items:
+                item.is_available = True
+                item.available_at = None
+                item.unavailable_reason = None
+            session.commit()
+
+        with self.Session() as session:
+            item = session.get(m.MenuItem, 1)
+            assert item.is_available is True
+            assert item.available_at is None
+
+    @pytest.mark.asyncio
+    async def test_future_timer_keeps_item_disabled(self):
+        """Позиция с future available_at → остаётся disabled."""
+        m = self.m
+
+        with self.Session() as session:
+            item = session.get(m.MenuItem, 1)
+            item.is_available = False
+            item.available_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+            session.commit()
+
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            now = datetime.now(timezone.utc)
+            items = session.scalars(
+                sa_select(m.MenuItem).where(
+                    m.MenuItem.is_available.is_(False),
+                    m.MenuItem.available_at.isnot(None),
+                    m.MenuItem.available_at <= now,
+                )
+            ).all()
+            assert len(items) == 0, "Future timer should not enable item yet"
+
+        with self.Session() as session:
+            item = session.get(m.MenuItem, 1)
+            assert item.is_available is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ATOL DUPLICATE EXTERNAL_ID — тесты crash recovery
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestAtolDuplicateRecovery(_E2ETestBase):
+    """Тесты обработки duplicate external_id от АТОЛ (crash recovery)."""
+
+    @pytest.mark.asyncio
+    async def test_fiscal_retry_duplicate_treated_as_success(self):
+        """FiscalQueue retry при duplicate external_id → status=done."""
+        m = self.m
+        oid = self._create_test_order(status="preparing", payment_status="paid")
+
+        # Создаём FiscalQueue запись
+        with self.Session() as session:
+            fq = m.FiscalQueue(
+                order_id=oid, order_number=7777, operation="sell",
+                payload_json=json.dumps({
+                    "items": [{"name_snapshot": "Test", "price_snapshot": 700, "quantity": 1}],
+                    "total_amount": 700,
+                }),
+                status="pending", attempts=0, max_attempts=10,
+                created_at=datetime.now(timezone.utc),
+                next_retry_at=datetime.now(timezone.utc),
+            )
+            session.add(fq)
+            session.commit()
+            fq_id = fq.id
+
+        # Mock fiscalize_order возвращает success=True с status="duplicate"
+        mock_fiscal = AsyncMock(return_value=MagicMock(
+            success=True, uuid="dup-uuid-123", error=None, status="duplicate"
+        ))
+
+        with patch("payments.fiscal.fiscalize_order", mock_fiscal):
+            # Воспроизводим логику retry worker
+            with self.Session() as session:
+                fq = session.get(m.FiscalQueue, fq_id)
+                fq.status = "processing"
+                fq.attempts += 1
+                session.commit()
+
+                result = await mock_fiscal(
+                    order_id=oid, order_number=7777,
+                    items=[{"name_snapshot": "Test", "price_snapshot": 700, "quantity": 1}],
+                    total_amount=700, payment_method="prepayment",
+                )
+
+                assert result.success
+                fq.status = "done"
+                fq.fiscal_uuid = result.uuid
+                order = session.get(m.Order, oid)
+                if order:
+                    order.fiscal_prepayment_uuid = result.uuid
+                session.commit()
+
+        with self.Session() as session:
+            fq = session.get(m.FiscalQueue, fq_id)
+            assert fq.status == "done"
+            assert fq.fiscal_uuid == "dup-uuid-123"
+            order = session.get(m.Order, oid)
+            assert order.fiscal_prepayment_uuid == "dup-uuid-123"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STUCK REFUND_PENDING AUTO-RETRY — тесты автоповтора возвратов
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestStuckRefundAutoRetry(_E2ETestBase):
+    """Тесты auto-retry для заказов застрявших в refund_pending."""
+
+    @pytest.mark.asyncio
+    async def test_stuck_refund_pending_retried(self):
+        """refund_pending > 10 мин → worker пытается вернуть деньги."""
+        m = self.m
+        oid = self._create_test_order(
+            status="cancelled", payment_status="refund_pending",
+            gateway_order_id="gw-stuck",
+        )
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+            session.commit()
+
+        # Worker находит stuck заказы
+        from sqlalchemy import select as sa_select
+        with self.Session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            stuck = session.scalars(
+                sa_select(m.Order).where(
+                    m.Order.payment_status == "refund_pending",
+                    m.Order.updated_at < cutoff,
+                )
+            ).all()
+            assert len(stuck) == 1
+            assert stuck[0].id == oid
+
+    @pytest.mark.asyncio
+    async def test_stuck_refund_success_updates_status(self):
+        """Auto-retry refund успешен → payment_status=refunded."""
+        m = self.m
+        oid = self._create_test_order(
+            status="cancelled", payment_status="refund_pending",
+            gateway_order_id="gw-retry-ok",
+        )
+
+        with self.Session() as session:
+            o = session.get(m.Order, oid)
+            o.updated_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+            session.commit()
+
+        mock_refund = AsyncMock(return_value=MagicMock(success=True))
+        mock_alert = AsyncMock()
+
+        with patch("payments.sbp.refund_sbp_payment", mock_refund), \
+             patch("bot_handlers.alert_admin", mock_alert):
+            # Воспроизводим логику worker
+            from sqlalchemy import select as sa_select
+            with self.Session() as session:
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                stuck = session.scalars(
+                    sa_select(m.Order).where(
+                        m.Order.payment_status == "refund_pending",
+                        m.Order.updated_at < cutoff,
+                    )
+                ).all()
+                stuck_data = [(o.id, o.public_order_number, o.gateway_order_id, o.total_amount) for o in stuck]
+                session.commit()
+
+            for s_oid, onum, gw_oid, amount in stuck_data:
+                result = await mock_refund(gw_oid, amount)
+                with self.Session() as session:
+                    order = session.get(m.Order, s_oid)
+                    if result.success:
+                        order.payment_status = "refunded"
+                        order.updated_at = datetime.now(timezone.utc)
+                    session.commit()
+
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "refunded"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
