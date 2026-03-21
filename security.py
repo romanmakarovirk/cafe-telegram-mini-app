@@ -53,6 +53,8 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> tuple[dict | No
             age = time_module.time() - int(auth_date)
             if age > AUTH_DATE_MAX_AGE_SECONDS:
                 return None, f"auth_date_expired(age={int(age)}s)"
+            if age < -300:
+                return None, "auth_date_future"
         except (ValueError, TypeError):
             return None, "auth_date_invalid"
 

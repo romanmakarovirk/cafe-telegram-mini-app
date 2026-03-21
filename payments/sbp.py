@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -55,7 +55,7 @@ class SbpStatusResult:
     """Результат проверки статуса платежа."""
     success: bool
     order_status: int = -1      # 0=создан, 2=оплачен, 3=отменён, 4=возврат, 6=отклонён
-    amount: int = 0             # сумма в копейках
+    amount: Optional[int] = None  # сумма в копейках (None если SBP API не вернул)
     error_code: str = ""
     error_message: str = ""
     raw_data: dict[str, Any] = field(default_factory=dict)
@@ -289,7 +289,7 @@ class SbpSberbankClient:
                 )
 
             order_status = data.get("orderStatus", -1)
-            amount = data.get("amount", 0)
+            amount = data.get("amount")  # None if SBP API didn't return amount
 
             logger.info(
                 "СБП get_status: gateway_order=%s, status=%d (%s)",
