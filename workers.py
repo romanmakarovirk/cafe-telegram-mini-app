@@ -277,8 +277,18 @@ async def _fiscal_retry_worker() -> None:
                                 payment_method=payload.get("payment_method", "prepayment"),
                             )
                         else:
-                            # Чек продажи: prepayment (Phase 1) или full_payment (Phase 2)
-                            pm = "prepayment" if fq.operation == "sell" else "full_payment"
+                            # Explicit mapping: каждая операция → payment_method
+                            _FISCAL_PM = {
+                                "sell": "prepayment",
+                                "sell_settlement": "full_payment",
+                            }
+                            pm = _FISCAL_PM.get(fq.operation)
+                            if pm is None:
+                                logging.error(
+                                    "Fiscal retry: unknown operation %r for queue %d, skipping",
+                                    fq.operation, fq.id,
+                                )
+                                continue
                             result = await fiscalize_order(
                                 order_id=fq.order_id,
                                 order_number=fq.order_number,
