@@ -3160,7 +3160,7 @@ class TestNamedConstants:
         assert m.AUTH_DATE_MAX_AGE_SECONDS == 86400
         assert m.RATE_LIMIT_ORDERS == 10
         assert m.FISCAL_RETRY_BATCH_SIZE == 5
-        assert m.KEEPALIVE_INTERVAL_SECONDS == 840
+        assert m.KEEPALIVE_INTERVAL_SECONDS == 720
 
 
 # ══════════════════════════════════════════════════════════════════════════════

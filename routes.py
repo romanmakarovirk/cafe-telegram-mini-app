@@ -1389,7 +1389,11 @@ async def menu_placeholder(item_id: int) -> Response:
       <circle cx="400" cy="260" r="80" fill="rgba(255,255,255,0.04)" />
     </svg>
     """.strip()
-    return Response(content=svg, media_type="image/svg+xml")
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ── User orders & config ─────────────────────────────────────────────────

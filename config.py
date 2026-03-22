@@ -98,7 +98,7 @@ RATE_LIMIT_CALLBACK = 30                   # SBP callback в минуту на I
 RATE_LIMIT_SBP_CHECK = 20                  # Проверок статуса оплаты в минуту
 FISCAL_RETRY_BATCH_SIZE = 5                # Записей за цикл fiscal retry worker
 FISCAL_INITIAL_DELAY_SECONDS = 120         # Задержка старта fiscal worker
-KEEPALIVE_INTERVAL_SECONDS = 14 * 60       # Пинг для Render (14 мин)
+KEEPALIVE_INTERVAL_SECONDS = 12 * 60       # Пинг для Render (12 мин, запас 3 мин до spin-down)
 KEEPALIVE_STARTUP_DELAY_SECONDS = 60       # Задержка старта keep-alive
 
 
