@@ -253,12 +253,12 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
             if has_phase1 and fiscal_safety_record:
                 fiscal_safety_id = fiscal_safety_record.id
 
-            receipt_msg = f"✅ Заказ №{order.public_order_number} готов и ожидает вас в ресторане!"
+            receipt_msg = f"✅ Заказ №{order.public_order_number} выдан. Приятного аппетита!"
             if order.fiscal_prepayment_uuid:
                 receipt_msg += f'\n\n<a href="https://receipt.atol.ru/{order.fiscal_prepayment_uuid}">Кассовый чек</a>'
             await notify_customer(order, receipt_msg)
             await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
-            await callback.answer("🟢 Готов!")
+            await callback.answer("🟢 Выдан!")
 
             if not has_phase1:
                 logging.warning(
@@ -749,6 +749,17 @@ async def handle_refund(message: Message) -> None:
             await message.answer(
                 f"Заказ №{order_number} нельзя вернуть "
                 f"(статус оплаты: {order.payment_status})."
+            )
+            return
+
+        if not order.gateway_order_id:
+            await message.answer(
+                f"Заказ №{order_number}: отсутствует идентификатор платежа (gateway_order_id). "
+                f"Автоматический возврат невозможен. Обратитесь в банк для ручного возврата."
+            )
+            logging.error(
+                "Refund blocked: order %d has paid status but no gateway_order_id",
+                order_number,
             )
             return
 

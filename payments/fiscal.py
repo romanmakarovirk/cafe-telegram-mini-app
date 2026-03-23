@@ -579,7 +579,7 @@ async def fiscalize_order(
         total_amount: Сумма в рублях (целое число, как в БД)
         client_email: Email для чека
         client_phone: Телефон для чека
-        payment_method: "full_payment" (полный расчёт) or "prepayment" (предоплата 100%)
+        payment_method: "full_payment" (полный расчёт) or "full_prepayment" (предоплата 100%)
 
     Returns:
         FiscalResult
@@ -632,7 +632,7 @@ async def refund_order(
     order_number: int,
     items: list[dict[str, Any]],
     total_amount: int,
-    payment_method: str = "prepayment",
+    payment_method: str = "full_prepayment",
     client_email: str = "",
     client_phone: str = "",
 ) -> FiscalResult:

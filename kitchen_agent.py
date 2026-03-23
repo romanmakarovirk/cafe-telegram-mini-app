@@ -221,10 +221,10 @@ def print_order(order: dict) -> bool:
         logger.info("Заказ #%s напечатан (Windows RAW)", order_num)
         return True
 
-    # Fallback: вывод в консоль
-    logger.warning("Принтер недоступен, вывожу заказ #%s в консоль:", order_num)
+    # Fallback: вывод в консоль (НЕ считаем напечатанным — принтер не работает)
+    logger.error("Принтер недоступен! Заказ #%s НЕ напечатан. Вывод в консоль:", order_num)
     print(text)
-    return True  # Считаем «напечатанным» чтобы не зациклить
+    return False
 
 
 # ---------------------------------------------------------------------------

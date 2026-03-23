@@ -3199,11 +3199,11 @@ class TestFiscalPaymentMethodPassthrough:
 
     @pytest.mark.asyncio
     async def test_sell_uses_item_payment_method(self):
-        """Items with payment_method='prepayment' must appear in receipt as prepayment."""
+        """Items with payment_method='full_prepayment' must appear in receipt as full_prepayment."""
         client, payloads = _make_atol_client_with_mock()
         items = [
-            {"name": "Плов", "price": 350.0, "quantity": 1, "payment_method": "prepayment"},
-            {"name": "Чай", "price": 100.0, "quantity": 2, "payment_method": "prepayment"},
+            {"name": "Плов", "price": 350.0, "quantity": 1, "payment_method": "full_prepayment"},
+            {"name": "Чай", "price": 100.0, "quantity": 2, "payment_method": "full_prepayment"},
         ]
 
         with patch.object(type(client), "is_configured", new_callable=lambda: property(lambda s: True)):
@@ -3212,8 +3212,8 @@ class TestFiscalPaymentMethodPassthrough:
         receipt_items = payloads[0].get("receipt", {}).get("items", [])
         assert len(receipt_items) == 2
         for ri in receipt_items:
-            assert ri["payment_method"] == "prepayment", (
-                f"Expected 'prepayment' but got '{ri['payment_method']}'"
+            assert ri["payment_method"] == "full_prepayment", (
+                f"Expected 'full_prepayment' but got '{ri['payment_method']}'"
             )
 
     @pytest.mark.asyncio
@@ -3237,7 +3237,7 @@ class TestFiscalExternalIdStable:
     async def test_external_id_no_uuid(self):
         """external_id should be deterministic for the same order."""
         client, payloads = _make_atol_client_with_mock()
-        items = [{"name": "Плов", "price": 350.0, "quantity": 1, "payment_method": "prepayment"}]
+        items = [{"name": "Плов", "price": 350.0, "quantity": 1, "payment_method": "full_prepayment"}]
 
         with patch.object(type(client), "is_configured", new_callable=lambda: property(lambda s: True)):
             await client.sell(order_id=42, order_number=100, items=items, total=350.0)
@@ -3505,9 +3505,9 @@ class TestE2EFullPaymentCycle(_E2ETestBase):
             assert fq_sell is not None, "FiscalQueue sell record must exist"
             assert fq_sell.status == "done"
 
-        # fiscalize_order вызван с payment_method="prepayment"
+        # fiscalize_order вызван с payment_method="full_prepayment"
         mock_fiscal.assert_called_once()
-        assert mock_fiscal.call_args[1]["payment_method"] == "prepayment"
+        assert mock_fiscal.call_args[1]["payment_method"] == "full_prepayment"
 
         # --- Phase 2: Ready → фискализация full_payment ---
         mock_fiscal_phase2 = AsyncMock(return_value=MagicMock(
@@ -3833,7 +3833,7 @@ class TestE2EFiscalRetryWorker(_E2ETestBase):
                                 total_amount=payload["total_amount"],
                             )
                         else:
-                            pm = "prepayment" if fq.operation == "sell" else "full_payment"
+                            pm = "full_prepayment" if fq.operation == "sell" else "full_payment"
                             result = await mock_fiscal_ok(
                                 order_id=fq.order_id,
                                 order_number=fq.order_number,
@@ -3867,9 +3867,9 @@ class TestE2EFiscalRetryWorker(_E2ETestBase):
             assert fq.fiscal_uuid == "retry-prepay-uuid-999"
             assert fq.attempts == 1
 
-        # fiscalize_order вызван с prepayment
+        # fiscalize_order вызван с full_prepayment
         mock_fiscal_ok.assert_called_once()
-        assert mock_fiscal_ok.call_args[1]["payment_method"] == "prepayment"
+        assert mock_fiscal_ok.call_args[1]["payment_method"] == "full_prepayment"
 
     @pytest.mark.asyncio
     async def test_retry_worker_calls_refund_for_sell_refund(self):
@@ -4357,7 +4357,7 @@ class TestFiscalPayloadValidation(_E2ETestBase):
 
     @pytest.mark.asyncio
     async def test_phase1_uses_prepayment_method(self):
-        """Phase 1 (оплата) → payment_method='prepayment'."""
+        """Phase 1 (оплата) → payment_method='full_prepayment'."""
         m = self.m
         oid = self._create_test_order()
 
@@ -4377,7 +4377,7 @@ class TestFiscalPayloadValidation(_E2ETestBase):
             from routes import _process_paid_order
             await _process_paid_order(oid)
 
-        assert captured_pm["pm"] == "prepayment"
+        assert captured_pm["pm"] == "full_prepayment"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4469,7 +4469,7 @@ class TestFiscalRetryExhaustion(_E2ETestBase):
             result = await mock_fiscal(
                 order_id=fq.order_id, order_number=fq.order_number,
                 items=[{"name_snapshot": "X", "price_snapshot": 100, "quantity": 1}],
-                total_amount=100, payment_method="prepayment",
+                total_amount=100, payment_method="full_prepayment",
             )
 
             # Fiscal неуспешна
@@ -5216,6 +5216,23 @@ class TestSbpRefund(_E2ETestBase):
             # handle_refund проверяет payment_status == "paid" — здесь уже refunded
             assert order.payment_status != "paid", "Cannot refund already refunded order"
 
+    @pytest.mark.asyncio
+    async def test_refund_blocked_without_gateway_order_id(self):
+        """Возврат заблокирован если gateway_order_id отсутствует."""
+        m = self.m
+        oid = self._create_test_order(
+            status="preparing", payment_status="paid",
+            gateway_order_id=None,
+        )
+
+        # Заказ paid но без gateway_order_id — рефанд должен быть заблокирован
+        with self.Session() as session:
+            order = session.get(m.Order, oid)
+            assert order.payment_status == "paid"
+            assert order.gateway_order_id is None
+            # handle_refund теперь проверяет gateway_order_id перед рефандом
+            # и не позволяет пометить refunded без реального возврата денег
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STOPLIST AUTO-ENABLE WORKER — тесты автовключения позиций
@@ -5333,7 +5350,7 @@ class TestAtolDuplicateRecovery(_E2ETestBase):
                 result = await mock_fiscal(
                     order_id=oid, order_number=7777,
                     items=[{"name_snapshot": "Test", "price_snapshot": 700, "quantity": 1}],
-                    total_amount=700, payment_method="prepayment",
+                    total_amount=700, payment_method="full_prepayment",
                 )
 
                 assert result.success

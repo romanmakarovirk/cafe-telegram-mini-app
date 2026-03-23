@@ -97,7 +97,7 @@ def format_order_for_cashier(order: Order) -> str:
         "created": "🆕 Создан",
         "paid": "💳 Оплачен",
         "preparing": "🟡 Готовится",
-        "ready": "🟢 Готов",
+        "ready": "🟢 Выдан",
     }
     customer_line = f"Клиент: <b>{escape(order.customer_name)}</b>" if order.customer_name else f"Клиент ID: <code>{order.telegram_user_id}</code>"
     comment_line = f"\n💬 <i>{escape(order.customer_comment)}</i>" if order.customer_comment else ""
@@ -121,7 +121,7 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
                         callback_data=f"order:preparing:{order_id}",
                     ),
                     InlineKeyboardButton(
-                        text="🟢 Готов",
+                        text="🟢 Выдан",
                         callback_data=f"order:ready:{order_id}",
                     ),
                 ],
@@ -138,7 +138,7 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🟢 Готов к выдаче",
+                        text="🟢 Выдать клиенту",
                         callback_data=f"order:ready:{order_id}",
                     )
                 ]

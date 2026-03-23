@@ -476,6 +476,7 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
         create_order_number = order.public_order_number
         create_total_amount = order.total_amount
         order.gateway_order_id = "creating"
+        order.updated_at = now_utc()
         session.commit()
 
     # 2. HTTP-вызов к СБП — вне FOR UPDATE lock
@@ -485,9 +486,14 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
         total_amount=create_total_amount,
     )
 
-    # 3. Сохраняем результат (или сбрасываем маркер при ошибке)
+    # 3. Сохраняем результат (compare-and-set: только если маркер ещё "creating")
     with db_session() as session:
-        order = session.get(Order, create_order_id)
+        order = session.scalars(
+            select(Order).where(
+                Order.id == create_order_id,
+                Order.gateway_order_id == "creating",
+            ).with_for_update()
+        ).first()
         if order:
             if result.success:
                 order.gateway_order_id = result.order_id
@@ -498,7 +504,15 @@ async def sbp_create_payment(order_id: Annotated[int, FastPath(gt=0, le=2_147_48
                           amount=order.total_amount)
             else:
                 order.gateway_order_id = None
+                order.updated_at = now_utc()
                 session.commit()
+        else:
+            session.commit()
+            logging.warning(
+                "Create-payment: order %d gateway_order_id no longer 'creating' — "
+                "skipping result save (concurrent update detected)",
+                create_order_id,
+            )
 
     if not result.success:
         logging.error("SBP create payment failed for order %d: %s", order_id, result.error_message)
@@ -804,12 +818,12 @@ async def _process_paid_order(order_id: int) -> None:
                             fiscal_payload_sell = json_module.dumps({
                                 "items": fiscal_items,
                                 "total_amount": refund_amount,
-                                "payment_method": "prepayment",
+                                "payment_method": "full_prepayment",
                             })
                             fiscal_payload_refund = json_module.dumps({
                                 "items": fiscal_items,
                                 "total_amount": refund_amount,
-                                "payment_method": "prepayment",
+                                "payment_method": "full_prepayment",
                             })
                             refund_session.add(FiscalQueue(
                                 order_id=stoplist_order_id,
@@ -915,7 +929,7 @@ async def _process_paid_order(order_id: int) -> None:
             order_number=order_number,
             items=fiscal_items,
             total_amount=total_amount,
-            payment_method="prepayment",  # Phase 1: prepayment receipt (54-FZ)
+            payment_method="full_prepayment",  # Phase 1: 100% prepayment receipt (54-FZ)
         )
         if fiscal_result.success and fiscal_result.uuid:
             with db_session() as session:
@@ -989,8 +1003,9 @@ async def _process_paid_order(order_id: int) -> None:
         except Exception:
             logging.exception("Не удалось уведомить клиента %s", user_id)
 
-    # 6. Уведомление администратору
-    await notify_admin_about_order(order_id)
+    # 6. Уведомление кассиру (с клавиатурой управления заказом)
+    from bot_handlers import notify_cashier_about_paid_order
+    await notify_cashier_about_paid_order(order_id)
 
 
 async def notify_admin_about_order(order_id: int) -> None:
@@ -1075,29 +1090,78 @@ async def kitchen_mark_printed(order_id: Annotated[int, FastPath(gt=0, le=2_147_
 
 @router.post("/api/orders/{order_id}/mark-ready")
 async def mark_order_ready(order_id: Annotated[int, FastPath(gt=0, le=2_147_483_647)], request: Request) -> dict[str, Any]:
-    """Пометить заказ как готовый к выдаче."""
+    """Пометить заказ как выданный клиенту."""
     verify_kitchen_api_key(request)
 
     with db_session() as session:
-        order = fetch_order(session, order_id)
+        order = session.scalars(
+            select(Order).where(Order.id == order_id).with_for_update()
+        ).first()
+        if order is None:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        _ = order.items
 
         if order.status == "ready":
             return serialize_order(order)
 
+        if order.payment_status != "paid":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Заказ не оплачен (статус: {order.payment_status}). Нельзя пометить готовым.",
+            )
+
         order.status = "ready"
         order.updated_at = now_utc()
+
+        # Phase 2 fiscal: full_payment receipt (как в bot_handlers)
+        has_phase1 = bool(order.fiscal_prepayment_uuid)
+        fiscal_safety_id = None
+        if has_phase1:
+            _ = order.items
+            fiscal_items = [
+                {
+                    "name_snapshot": item.name_snapshot,
+                    "price_snapshot": item.price_snapshot,
+                    "quantity": item.quantity,
+                }
+                for item in order.items
+            ]
+            fiscal_safety_record = FiscalQueue(
+                order_id=order.id,
+                order_number=order.public_order_number,
+                operation="sell_settlement",
+                payload_json=json_module.dumps({
+                    "items": fiscal_items,
+                    "total_amount": order.total_amount,
+                }),
+                status="pending",
+                attempts=0,
+                max_attempts=10,
+                created_at=now_utc(),
+                next_retry_at=now_utc() + timedelta(minutes=5),
+            )
+            session.add(fiscal_safety_record)
+
         session.commit()
         session.refresh(order)
         _ = order.items
 
         user_id = order.telegram_user_id
         order_number = order.public_order_number
+        mark_ready_order_id = order.id
+
+    if not has_phase1:
+        logging.warning(
+            "Phase 2 fiscal (mark-ready API): Phase 1 not found for order %d. "
+            "Skipping full_payment receipt.",
+            mark_ready_order_id,
+        )
 
     if bot_setup.bot:
         try:
             await bot_setup.bot.send_message(
                 chat_id=user_id,
-                text=f"✅ Заказ №{order_number} готов и ожидает вас!",
+                text=f"✅ Заказ №{order_number} выдан. Приятного аппетита!",
             )
         except Exception:
             logging.exception("Не удалось уведомить клиента о готовности заказа %d", order_number)

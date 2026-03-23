@@ -249,14 +249,14 @@ async def _fiscal_retry_worker() -> None:
                         logging.info("Fiscal retry: пропуск отменённого заказа %d", fq.order_id)
                         continue
 
-                    # sell_refund нельзя обработать раньше sell (54-ФЗ)
-                    if fq.operation == "sell_refund":
+                    # sell_refund и sell_settlement нельзя обработать раньше sell (54-ФЗ)
+                    if fq.operation in ("sell_refund", "sell_settlement"):
                         if parent_order and not parent_order.fiscal_prepayment_uuid:
                             fq.next_retry_at = database.now_utc() + timedelta(minutes=5)
                             session.commit()
                             logging.info(
-                                "Fiscal retry: sell_refund для заказа %d отложен — ждём sell чек",
-                                fq.order_id,
+                                "Fiscal retry: %s для заказа %d отложен — ждём sell чек",
+                                fq.operation, fq.order_id,
                             )
                             continue
 
@@ -274,12 +274,12 @@ async def _fiscal_retry_worker() -> None:
                                 order_number=fq.order_number,
                                 items=payload["items"],
                                 total_amount=payload["total_amount"],
-                                payment_method=payload.get("payment_method", "prepayment"),
+                                payment_method=payload.get("payment_method", "full_prepayment"),
                             )
                         else:
                             # Explicit mapping: каждая операция → payment_method
                             _FISCAL_PM = {
-                                "sell": "prepayment",
+                                "sell": "full_prepayment",
                                 "sell_settlement": "full_payment",
                             }
                             pm = _FISCAL_PM.get(fq.operation)
@@ -305,6 +305,44 @@ async def _fiscal_retry_worker() -> None:
                             if order:
                                 if fq.operation == "sell":
                                     order.fiscal_prepayment_uuid = result.uuid
+                                    # Fix: если заказ уже выдан (ready), а Phase 2 ещё не создан —
+                                    # автоматически создаём sell_settlement чек (54-ФЗ)
+                                    if order.status == "ready":
+                                        existing_phase2 = session.scalars(
+                                            select(FiscalQueue).where(
+                                                FiscalQueue.order_id == order.id,
+                                                FiscalQueue.operation == "sell_settlement",
+                                            )
+                                        ).first()
+                                        if not existing_phase2:
+                                            fiscal_items = [
+                                                {
+                                                    "name_snapshot": item.name_snapshot,
+                                                    "price_snapshot": item.price_snapshot,
+                                                    "quantity": item.quantity,
+                                                }
+                                                for item in order.items
+                                            ]
+                                            phase2_record = FiscalQueue(
+                                                order_id=order.id,
+                                                order_number=order.public_order_number,
+                                                operation="sell_settlement",
+                                                payload_json=json_module.dumps({
+                                                    "items": fiscal_items,
+                                                    "total_amount": order.total_amount,
+                                                }),
+                                                status="pending",
+                                                attempts=0,
+                                                max_attempts=10,
+                                                created_at=database.now_utc(),
+                                                next_retry_at=database.now_utc() + timedelta(minutes=1),
+                                            )
+                                            session.add(phase2_record)
+                                            logging.info(
+                                                "Fiscal retry: auto-created Phase 2 (sell_settlement) "
+                                                "for already-ready order %d",
+                                                order.id,
+                                            )
                                 else:
                                     order.fiscal_uuid = result.uuid
                             logging.info(
@@ -468,7 +506,34 @@ async def _sbp_payment_polling_worker() -> None:
                     if not result.success:
                         continue
                     if result.is_paid:
-                        # Деньги списались после таймаута — воскрешаем заказ
+                        # Проверка суммы (как в основном polling)
+                        expected_kopecks = amount * 100
+                        if result.amount is None:
+                            logging.error(
+                                "SBP polling: expired order %d paid but amount=None, skipping",
+                                oid,
+                            )
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"⚠️ Expired заказ #{onum} оплачен, но SBP не вернул сумму. "
+                                f"Требуется ручная проверка."
+                            )
+                            continue
+                        if result.amount != expected_kopecks:
+                            logging.critical(
+                                "SBP polling: AMOUNT MISMATCH expired order %d "
+                                "expected %d got %d",
+                                oid, expected_kopecks, result.amount,
+                            )
+                            from bot_handlers import alert_admin
+                            await alert_admin(
+                                f"⚠️ AMOUNT MISMATCH expired заказ #{onum}: "
+                                f"ожидали {expected_kopecks} коп, получили {result.amount} коп. "
+                                f"Требуется ручная проверка."
+                            )
+                            continue
+
+                        # Сумма совпала — воскрешаем заказ
                         logging.warning(
                             "SBP polling: expired заказ %d оплачен! Воскрешаем.", oid,
                         )
