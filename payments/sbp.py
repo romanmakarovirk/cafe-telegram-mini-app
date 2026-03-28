@@ -1,4 +1,7 @@
 """
+LEGACY: Заменён на ЮKassa (payments/yookassa_payment.py).
+Сохранён для обратной совместимости с тестами. Не используется в production.
+
 СБП Сбербанк — модуль приёма онлайн-платежей через Систему Быстрых Платежей.
 
 Интеграция через Sberbank Acquiring REST API (register.do + SBP C2B).

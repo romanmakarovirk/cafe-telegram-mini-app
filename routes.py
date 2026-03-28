@@ -61,9 +61,6 @@ router = APIRouter()
 # Re-export from services for backward compatibility (workers.py, main.py import from routes)
 from services import _process_paid_order, notify_admin_about_order, audit_log  # noqa: F401
 
-# Structured audit logger for payment/fiscal events (54-FZ compliance)
-_audit = logging.getLogger("audit.payment")
-
 # In-memory menu cache (TTL 5 min) — avoids DB query on every /api/menu request
 _menu_cache: dict[str, Any] = TTLCache(maxsize=4, ttl=300) if TTLCache else {}
 
