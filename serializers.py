@@ -8,6 +8,7 @@ from typing import Any, Optional
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import BASE_DIR
+from statuses import OrderStatus
 from database import IRKUTSK_TZ, rub
 from menu_data import CATEGORY_BY_SLUG
 from models import MenuItem, Order
@@ -94,10 +95,10 @@ def format_order_for_cashier(order: Order) -> str:
         for item in order.items
     )
     status_labels = {
-        "created": "🆕 Создан",
-        "paid": "💳 Оплачен",
-        "preparing": "🟡 Готовится",
-        "ready": "🟢 Выдан",
+        OrderStatus.CREATED: "🆕 Создан",
+        OrderStatus.PAID: "💳 Оплачен",
+        OrderStatus.PREPARING: "🟡 Готовится",
+        OrderStatus.READY: "🟢 Выдан",
     }
     customer_line = f"Клиент: <b>{escape(order.customer_name)}</b>" if order.customer_name else f"Клиент ID: <code>{order.telegram_user_id}</code>"
     comment_line = f"\n💬 <i>{escape(order.customer_comment)}</i>" if order.customer_comment else ""
@@ -112,7 +113,7 @@ def format_order_for_cashier(order: Order) -> str:
 
 
 def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup | None:
-    if status == "paid":
+    if status == OrderStatus.PAID:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -133,7 +134,7 @@ def build_cashier_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup |
                 ],
             ]
         )
-    if status == "preparing":
+    if status == OrderStatus.PREPARING:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [

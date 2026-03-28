@@ -1,9 +1,11 @@
-# Модули интеграции: СБП Сбербанк + АТОЛ Онлайн фискализация
-from payments.fiscal import fiscalize_order, refund_order, atol_client  # noqa: F401
-from payments.sbp import (  # noqa: F401
-    create_sbp_payment,
-    check_sbp_payment,
-    refund_sbp_payment,
-    verify_callback,
-    sbp_client,
+# Модуль платежей: ЮKassa (оплата + автоматическая фискализация 54-ФЗ)
+#
+# Старые модули (sbp.py, fiscal.py) сохранены для возможного отката,
+# но активно используется только yookassa_payment.py
+from payments.yookassa_payment import (  # noqa: F401
+    create_yookassa_payment,
+    check_yookassa_payment,
+    refund_yookassa_payment,
+    is_trusted_ip,
+    yookassa_client,
 )

@@ -15,3 +15,6 @@ generate_*.py
 generate_*.js
 package.json
 package-lock.json
+*.pdf
+fonts/
+audit_round*.md

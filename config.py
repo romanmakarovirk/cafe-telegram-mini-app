@@ -94,10 +94,10 @@ AUTH_DATE_MAX_AGE_SECONDS = 86400          # Срок жизни Telegram initDa
 RATE_LIMIT_ORDERS = 10                     # Заказов в минуту на пользователя
 RATE_LIMIT_REVIEWS = 5                     # Отзывов в минуту
 RATE_LIMIT_GENERAL = 60                    # Общих запросов в минуту
-RATE_LIMIT_CALLBACK = 30                   # SBP callback в минуту на IP
-RATE_LIMIT_SBP_CHECK = 20                  # Проверок статуса оплаты в минуту
-FISCAL_RETRY_BATCH_SIZE = 5                # Записей за цикл fiscal retry worker
-FISCAL_INITIAL_DELAY_SECONDS = 120         # Задержка старта fiscal worker
+RATE_LIMIT_CALLBACK = 30                   # Webhook в минуту на IP
+RATE_LIMIT_PAYMENT_CHECK = 20              # Проверок статуса оплаты в минуту
+FISCAL_RETRY_BATCH_SIZE = 5                # Legacy (АТОЛ), оставлено для совместимости тестов
+FISCAL_INITIAL_DELAY_SECONDS = 120         # Legacy (АТОЛ), оставлено для совместимости тестов
 KEEPALIVE_INTERVAL_SECONDS = 12 * 60       # Пинг для Render (12 мин, запас 3 мин до spin-down)
 KEEPALIVE_STARTUP_DELAY_SECONDS = 60       # Задержка старта keep-alive
 
@@ -108,22 +108,34 @@ def validate_production_config() -> None:
         "BOT_TOKEN": BOT_TOKEN,
         "KITCHEN_API_KEY": KITCHEN_API_KEY,
     }
-    sbp_configured = bool(os.getenv("SBP_USERNAME") or os.getenv("SBP_TOKEN"))
-    if sbp_configured:
-        required_in_prod["SBP_CALLBACK_SECRET"] = os.getenv("SBP_CALLBACK_SECRET", "")
-        if os.getenv("SBP_USERNAME") and not os.getenv("SBP_TOKEN"):
-            required_in_prod["SBP_PASSWORD"] = os.getenv("SBP_PASSWORD", "")
 
-    atol_configured = bool(os.getenv("ATOL_LOGIN"))
-    if atol_configured:
-        required_in_prod["ATOL_INN"] = os.getenv("ATOL_INN", "")
-        required_in_prod["ATOL_PASSWORD"] = os.getenv("ATOL_PASSWORD", "")
-        required_in_prod["ATOL_GROUP_CODE"] = os.getenv("ATOL_GROUP_CODE", "")
+    # ЮKassa credentials + реквизиты компании
+    yookassa_configured = bool(os.getenv("YOOKASSA_SHOP_ID"))
+    if yookassa_configured:
+        required_in_prod["YOOKASSA_SECRET_KEY"] = os.getenv("YOOKASSA_SECRET_KEY", "")
+        required_in_prod["YOOKASSA_RETURN_URL"] = os.getenv("YOOKASSA_RETURN_URL", "")
+
+    # Реквизиты для чеков 54-ФЗ (обязательны если есть ЮKassa)
+    company_inn = os.getenv("COMPANY_INN") or os.getenv("ATOL_INN", "")
+    company_email = os.getenv("COMPANY_EMAIL") or os.getenv("ATOL_COMPANY_EMAIL", "")
+    company_sno = os.getenv("COMPANY_SNO") or os.getenv("ATOL_SNO", "")
+    if yookassa_configured:
+        required_in_prod["COMPANY_INN"] = company_inn
+        required_in_prod["COMPANY_EMAIL"] = company_email
 
     missing = [name for name, val in required_in_prod.items() if not val]
 
     if not ALLOWED_ADMIN_IDS:
         missing.append("ALLOWED_ADMIN_IDS")
+
+    # Валидация формата ИНН (10 или 12 цифр)
+    if company_inn and not (company_inn.isdigit() and len(company_inn) in (10, 12)):
+        missing.append("COMPANY_INN (формат: 10 или 12 цифр)")
+
+    # Валидация системы налогообложения
+    valid_sno = {"osn", "usn_income", "usn_income_outcome", "envd", "esn", "patent"}
+    if company_sno and company_sno not in valid_sno:
+        missing.append(f"COMPANY_SNO (допустимые: {', '.join(sorted(valid_sno))})")
 
     if missing:
         msg = f"Missing required config: {', '.join(missing)}"
@@ -135,11 +147,10 @@ def validate_production_config() -> None:
             logging.warning("⚠️  DEV MODE: %s (OK for development)", msg)
 
     # Лог активных режимов — видно сразу при старте какой режим включён
-    sbp_test = os.getenv("SBP_TEST_MODE", "true").lower() in ("true", "1", "yes")
-    atol_test = os.getenv("ATOL_TEST_MODE", "true").lower() in ("true", "1", "yes")
-    logging.info("Payment modes: SBP_TEST_MODE=%s, ATOL_TEST_MODE=%s", sbp_test, atol_test)
-    if not DEV_MODE and (sbp_test or atol_test):
-        logging.warning("⚠️  SANDBOX MODE ACTIVE in production — переключите TEST_MODE на Render")
+    yookassa_test = os.getenv("YOOKASSA_TEST_MODE", "true").lower() in ("true", "1", "yes")
+    logging.info("Payment mode: YOOKASSA_TEST_MODE=%s", yookassa_test)
+    if not DEV_MODE and yookassa_test:
+        logging.warning("⚠️  SANDBOX MODE ACTIVE in production — переключите YOOKASSA_TEST_MODE на Render")
 
 
 def normalize_database_url(raw_url: str) -> str:

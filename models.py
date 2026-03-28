@@ -6,6 +6,8 @@ from typing import Optional
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from statuses import FiscalQueueStatus
+
 
 class Base(DeclarativeBase):
     pass
@@ -96,7 +98,7 @@ class FiscalQueue(Base):
     order_number: Mapped[int] = mapped_column(Integer)
     operation: Mapped[str] = mapped_column(String(20))
     payload_json: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    status: Mapped[str] = mapped_column(String(20), default=FiscalQueueStatus.PENDING, index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=10)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

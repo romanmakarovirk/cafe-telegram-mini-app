@@ -21,17 +21,33 @@ from config import (
     RATE_LIMIT_GENERAL,
     RATE_LIMIT_ORDERS,
     RATE_LIMIT_REVIEWS,
-    RATE_LIMIT_SBP_CHECK,
+    RATE_LIMIT_PAYMENT_CHECK,
 )
 
 import json as json_module
 
 
 def get_client_ip(request: Request) -> str:
-    """Extract real client IP behind Render proxy."""
+    """Extract real client IP behind Render/Cloudflare proxy.
+
+    Priority: CF-Connecting-IP (set by Cloudflare)
+    → X-Forwarded-For rightmost (proxy-added, not client-controlled)
+    → request.client.host (direct connection).
+
+    ⚠️  SECURITY NOTE: CF-Connecting-IP is trustworthy ONLY when traffic
+    goes through Cloudflare. If *.onrender.com is accessible directly
+    (bypassing Cloudflare), this header CAN be spoofed by the client.
+    Therefore webhook handler verifies payments via ЮKassa API as
+    defense-in-depth (routes.py yookassa_webhook).
+    """
+    # Cloudflare sets this header — trustworthy only through CF proxy
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
+    # Fallback: rightmost X-Forwarded-For (added by proxy, not client)
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -179,7 +195,7 @@ order_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_ORDERS, window=60)
 review_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_REVIEWS, window=60)
 general_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_GENERAL, window=60)
 callback_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_CALLBACK, window=60)
-sbp_check_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_SBP_CHECK, window=60)
+payment_check_limiter = SimpleRateLimiter(max_requests=RATE_LIMIT_PAYMENT_CHECK, window=60)
 
 
 def verify_kitchen_api_key(request: Request) -> None:

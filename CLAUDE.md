@@ -1,7 +1,7 @@
 # Кафе «Шашлык и Плов» — Telegram Mini App
 
 ## Build & Test
-- **Тесты:** `cd "/Users/romanmakarov/Documents/Шашлык и плов/New project" && python3 -m pytest test_system.py -v --tb=short`
+- **Тесты:** `cd "/Users/romanmakarov/Documents/Шашлык и плов/New project" && python3 -m pytest tests/ -v --tb=short`
 - **Запуск сервера:** `python main.py` (требует .env)
 - **Деплой:** push в GitHub → автодеплой на Render.com
 

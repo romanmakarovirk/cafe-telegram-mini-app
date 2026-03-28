@@ -21,9 +21,11 @@ from sqlalchemy import func, select
 import bot_setup
 import database
 from config import ALLOWED_ADMIN_IDS, WEBAPP_URL
+from routes import invalidate_menu_cache
 from database import IRKUTSK_TZ, rub
 from menu_data import CATEGORY_BY_SLUG, CATEGORY_META, CATEGORY_ORDER
-from models import FiscalQueue, MenuItem, Order, OrderItem
+from models import MenuItem, Order, OrderItem
+from statuses import OrderStatus, PaymentStatus
 from serializers import (
     _format_available_at,
     build_cashier_keyboard,
@@ -156,8 +158,8 @@ async def handle_admin(message: Message) -> None:
 
 
 VALID_STATUS_TRANSITIONS: dict[str, list[str]] = {
-    "paid": ["preparing", "ready"],
-    "preparing": ["ready"],
+    OrderStatus.PAID: [OrderStatus.PREPARING, OrderStatus.READY],
+    OrderStatus.PREPARING: [OrderStatus.READY],
 }
 
 
@@ -179,136 +181,58 @@ async def handle_order_status_change(callback: CallbackQuery) -> None:
         await callback.answer("Некорректные данные.")
         return
 
+    # Читаем и обновляем заказ, затем освобождаем соединение перед async I/O
+    notify_text = None
+    cashier_text = None
+    cashier_kb = None
+    answer_text = None
+
     with database.db_session() as session:
         order = session.scalars(
             select(Order).where(Order.id == order_id).with_for_update()
         ).first()
         if order is None:
+            session.commit()
             await callback.answer("Заказ не найден.")
             return
         _ = order.items  # eager load
 
         allowed = VALID_STATUS_TRANSITIONS.get(order.status, [])
         if action not in allowed:
+            session.commit()
             await callback.answer("Невозможно изменить статус заказа.")
             return
 
-        if action == "preparing":
-            order.status = "preparing"
+        if action == OrderStatus.PREPARING:
+            order.status = OrderStatus.PREPARING
             order.updated_at = database.now_utc()
             session.commit()
             session.refresh(order)
-            await notify_customer(
-                order,
-                f"Заказ №{order.public_order_number} передан на кухню. Сейчас его готовят.",
-            )
-            await callback.message.edit_text(
-                format_order_for_cashier(order),
-                reply_markup=build_cashier_keyboard(order.id, order.status),
-            )
-            await callback.answer("🟡 Готовится")
-            return
+            notify_text = f"Заказ №{order.public_order_number} передан на кухню. Сейчас его готовят."
+            cashier_text = format_order_for_cashier(order)
+            cashier_kb = build_cashier_keyboard(order.id, order.status)
+            answer_text = "🟡 Готовится"
 
-        if action == "ready":
-            order.status = "ready"
+        elif action == OrderStatus.READY:
+            order.status = OrderStatus.READY
             order.updated_at = database.now_utc()
-
-            # Phase 2 fiscal receipt: full settlement (54-FZ two-phase)
-            import json as json_module
-            fiscal_items = [
-                {
-                    "name_snapshot": item.name_snapshot,
-                    "price_snapshot": item.price_snapshot,
-                    "quantity": item.quantity,
-                }
-                for item in order.items
-            ]
-            order_id_ready = order.id
-            order_number_ready = order.public_order_number
-            total_amount_ready = order.total_amount
-            has_phase1 = bool(order.fiscal_prepayment_uuid)
-
-            # Создаём FiscalQueue В ТОЙ ЖЕ транзакции что status="ready"
-            # Гарантия 54-ФЗ: если сервер упадёт после commit, retry worker подхватит
-            fiscal_safety_id = None
-            if has_phase1:
-                fiscal_safety_record = FiscalQueue(
-                    order_id=order_id_ready,
-                    order_number=order_number_ready,
-                    operation="sell_settlement",
-                    payload_json=json_module.dumps({
-                        "items": fiscal_items,
-                        "total_amount": total_amount_ready,
-                    }),
-                    status="pending",
-                    attempts=0,
-                    max_attempts=10,
-                    created_at=database.now_utc(),
-                    next_retry_at=database.now_utc() + timedelta(minutes=5),
-                )
-                session.add(fiscal_safety_record)
-
             session.commit()
             session.refresh(order)
-            if has_phase1 and fiscal_safety_record:
-                fiscal_safety_id = fiscal_safety_record.id
+            # Фискализация обрабатывается ЮKassa автоматически
+            notify_text = f"✅ Заказ №{order.public_order_number} выдан. Приятного аппетита!"
+            cashier_text = format_order_for_cashier(order)
+            cashier_kb = None
+            answer_text = "🟢 Выдан!"
 
-            receipt_msg = f"✅ Заказ №{order.public_order_number} выдан. Приятного аппетита!"
-            if order.fiscal_prepayment_uuid:
-                receipt_msg += f'\n\n<a href="https://receipt.atol.ru/{order.fiscal_prepayment_uuid}">Кассовый чек</a>'
-            await notify_customer(order, receipt_msg)
-            await callback.message.edit_text(format_order_for_cashier(order), reply_markup=None)
-            await callback.answer("🟢 Выдан!")
+        # Копируем данные для notify_customer вне сессии
+        order_data = order if notify_text else None
 
-            if not has_phase1:
-                logging.warning(
-                    "Phase 2 fiscal: Phase 1 (prepayment) not found for order %d. "
-                    "Skipping full_payment receipt.",
-                    order_id_ready,
-                )
-                await alert_admin(
-                    f"Заказ #{order_number_ready}: Phase 1 чек (prepayment) отсутствует. "
-                    f"Phase 2 чек (full_payment) не создан. Проверьте fiscal_queue!"
-                )
-            else:
-                # Пробуем онлайн-фискализацию; FiscalQueue уже создана (гарантия 54-ФЗ)
-                try:
-                    from payments.fiscal import fiscalize_order
-                    fiscal_result = await fiscalize_order(
-                        order_id=order_id_ready,
-                        order_number=order_number_ready,
-                        items=fiscal_items,
-                        total_amount=total_amount_ready,
-                        payment_method="full_payment",
-                    )
-                    if fiscal_result.success and fiscal_result.uuid:
-                        with database.db_session() as fs:
-                            o = fs.get(Order, order_id_ready)
-                            if o:
-                                o.fiscal_uuid = fiscal_result.uuid
-                            # Помечаем FiscalQueue как выполненную
-                            if fiscal_safety_id:
-                                fq = fs.get(FiscalQueue, fiscal_safety_id)
-                                if fq:
-                                    fq.status = "done"
-                                    fq.fiscal_uuid = fiscal_result.uuid
-                                    fq.completed_at = database.now_utc()
-                            fs.commit()
-                        logging.info(
-                            "Phase 2 fiscal receipt for order %d, uuid=%s",
-                            order_id_ready, fiscal_result.uuid,
-                        )
-                    else:
-                        logging.error(
-                            "Phase 2 fiscal failed for order %d: %s — retry worker подхватит",
-                            order_id_ready, fiscal_result.error,
-                        )
-                except Exception:
-                    logging.exception(
-                        "Phase 2 fiscalization error for order %d — retry worker подхватит",
-                        order_id_ready,
-                    )
-            return
+    # Async I/O вне db_session — соединение с БД освобождено
+    if notify_text and order_data:
+        await notify_customer(order_data, notify_text)
+        await callback.message.edit_text(cashier_text, reply_markup=cashier_kb)
+        await callback.answer(answer_text)
+        return
 
     await callback.answer("Неизвестное действие.")
 
@@ -358,6 +282,7 @@ async def handle_stop(message: Message) -> None:
                 db_item.is_available = False
                 db_item.unavailable_reason = "Временно недоступно"
                 session.commit()
+                invalidate_menu_cache()
 
         buttons = [
             [
@@ -454,14 +379,14 @@ async def handle_stats(message: Message) -> None:
     with database.db_session() as session:
         period_orders = session.scalar(
             select(func.count(Order.id)).where(
-                Order.payment_status == "paid",
+                Order.payment_status == PaymentStatus.PAID,
                 Order.created_at >= period_start_utc,
             )
         ) or 0
 
         period_revenue = session.scalar(
             select(func.sum(Order.total_amount)).where(
-                Order.payment_status == "paid",
+                Order.payment_status == PaymentStatus.PAID,
                 Order.created_at >= period_start_utc,
             )
         ) or 0
@@ -471,7 +396,7 @@ async def handle_stats(message: Message) -> None:
                 OrderItem.name_snapshot,
                 func.sum(OrderItem.quantity).label("total_qty"),
             ).join(Order).where(
-                Order.payment_status == "paid",
+                Order.payment_status == PaymentStatus.PAID,
                 Order.created_at >= period_start_utc,
             ).group_by(OrderItem.name_snapshot)
             .order_by(func.sum(OrderItem.quantity).desc())
@@ -484,13 +409,11 @@ async def handle_stats(message: Message) -> None:
 
         pending_orders = session.scalar(
             select(func.count(Order.id)).where(
-                Order.status.in_(["created", "paid", "preparing"]),
+                Order.status.in_([OrderStatus.CREATED, OrderStatus.PAID, OrderStatus.PREPARING]),
             )
         ) or 0
 
-        pending_fiscal = session.scalar(
-            select(func.count(FiscalQueue.id)).where(FiscalQueue.status == "pending")
-        ) or 0
+        pending_fiscal = 0  # Фискализация через ЮKassa (автоматически)
 
         daily_stats_text = ""
         if period != "today":
@@ -500,7 +423,7 @@ async def handle_stats(message: Message) -> None:
                     func.count(Order.id).label("cnt"),
                     func.sum(Order.total_amount).label("rev"),
                 ).where(
-                    Order.payment_status == "paid",
+                    Order.payment_status == PaymentStatus.PAID,
                     Order.created_at >= period_start_utc,
                 ).group_by(func.date(Order.created_at))
                 .order_by(func.date(Order.created_at).desc())
@@ -566,6 +489,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                 item.unavailable_reason = None
                 item.available_at = None
                 session.commit()
+                invalidate_menu_cache()
                 await callback.answer(f"✅ {item.name} включено")
                 await callback.message.edit_text(
                     f"✅ <b>{escape(item.name)}</b> снова доступно!",
@@ -581,6 +505,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                 item.is_available = False
                 item.unavailable_reason = "Временно недоступно"
                 session.commit()
+                invalidate_menu_cache()
                 buttons = [
                     [
                         InlineKeyboardButton(text="30 мин", callback_data=f"sl:time:{item_id}:30"),
@@ -614,6 +539,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                 item.is_available = False
                 item.unavailable_reason = "Категория временно недоступна"
             session.commit()
+            invalidate_menu_cache()
         await callback.message.edit_text(
             f"🚫 Категория <b>{escape(cat_info['title'])}</b> отключена ({count} блюд).\n"
             f"Для включения: /stoplist",
@@ -636,6 +562,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                 item.unavailable_reason = None
                 item.available_at = None
             session.commit()
+            invalidate_menu_cache()
         await callback.message.edit_text(
             f"✅ Категория <b>{escape(cat_info['title'])}</b> включена ({count} блюд).",
         )
@@ -658,6 +585,7 @@ async def handle_stoplist_callback(callback: CallbackQuery) -> None:
                     item.available_at = database.now_utc() + timedelta(minutes=minutes)
                     item.unavailable_reason = f"Будет готово {_format_available_at(item.available_at) or 'позже'}"
                     session.commit()
+                    invalidate_menu_cache()
                     await callback.message.edit_text(
                         f"🚫 <b>{escape(item.name)}</b> отключено.\n"
                         f"⏰ Вернётся автоматически {_format_available_at(item.available_at)}",
@@ -734,6 +662,7 @@ async def handle_refund(message: Message) -> None:
         return
 
     # 1. Захватить блокировку, проверить статус, подготовить данные для рефанда
+    error_msg = None
     with database.db_session() as session:
         order = session.scalars(
             select(Order).where(
@@ -742,18 +671,16 @@ async def handle_refund(message: Message) -> None:
         ).first()
 
         if not order:
-            await message.answer(f"Заказ №{order_number} не найден.")
-            return
-
-        if order.payment_status != "paid":
-            await message.answer(
+            error_msg = f"Заказ №{order_number} не найден."
+            session.commit()
+        elif order.payment_status != PaymentStatus.PAID:
+            error_msg = (
                 f"Заказ №{order_number} нельзя вернуть "
                 f"(статус оплаты: {order.payment_status})."
             )
-            return
-
-        if not order.gateway_order_id:
-            await message.answer(
+            session.commit()
+        elif not order.gateway_order_id:
+            error_msg = (
                 f"Заказ №{order_number}: отсутствует идентификатор платежа (gateway_order_id). "
                 f"Автоматический возврат невозможен. Обратитесь в банк для ручного возврата."
             )
@@ -761,85 +688,75 @@ async def handle_refund(message: Message) -> None:
                 "Refund blocked: order %d has paid status but no gateway_order_id",
                 order_number,
             )
-            return
-
-        # Сохраняем данные и помечаем refund_pending ДО сетевого вызова
-        gateway_oid = order.gateway_order_id
-        refund_amount = order.total_amount
-        refund_order_id = order.id
-        refund_order_number = order.public_order_number
-        refund_user_id = order.telegram_user_id
-        _ = order.items  # eager load
-        import json as json_module
-        fiscal_items = [
-            {
-                "name_snapshot": item.name_snapshot,
-                "price_snapshot": item.price_snapshot,
-                "quantity": item.quantity,
-            }
-            for item in order.items
-        ]
-
-        order.payment_status = "refund_pending"
-        order.updated_at = database.now_utc()
-        session.commit()  # Освобождаем FOR UPDATE lock
-
-    # 2. Возврат денег через СБП (вне блокировки — async I/O)
-    if gateway_oid:
-        from payments.sbp import refund_sbp_payment
-        refund_result = await refund_sbp_payment(gateway_oid, refund_amount)
-        if not refund_result.success:
-            # Откатываем статус обратно
-            with database.db_session() as session:
-                o = session.get(Order, refund_order_id)
-                if o and o.payment_status == "refund_pending":
-                    o.payment_status = "paid"
-                    o.updated_at = database.now_utc()
-                    session.commit()
-            await message.answer(
-                f"Ошибка возврата СБП: {refund_result.error_message}\n"
-                f"Заказ №{order_number} НЕ возвращён. Обратитесь в банк."
-            )
-            return
-
-    # 3. Обновить статусы и создать фискальный чек возврата
-    with database.db_session() as session:
-        order = session.get(Order, refund_order_id)
-        if order:
-            order.payment_status = "refunded"
-            order.status = "cancelled"
-            order.updated_at = database.now_utc()
-
-            fiscal_payload = json_module.dumps({
-                "items": fiscal_items,
-                "total_amount": refund_amount,
-            })
-
-            fiscal_refund = FiscalQueue(
-                order_id=refund_order_id,
-                order_number=refund_order_number,
-                operation="sell_refund",
-                payload_json=fiscal_payload,
-                status="pending",
-                attempts=0,
-                max_attempts=10,
-                created_at=database.now_utc(),
-                next_retry_at=database.now_utc(),
-            )
-            session.add(fiscal_refund)
             session.commit()
 
-        if order:
-            await notify_customer(
-                order,
-                f"Возврат средств по заказу No{refund_order_number}. "
-                f"Сумма {database.rub(refund_amount)} будет возвращена.",
+        if not error_msg:
+            # Сохраняем данные и помечаем refund_pending ДО сетевого вызова
+            gateway_oid = order.gateway_order_id
+            refund_amount = order.total_amount
+            refund_order_id = order.id
+            refund_order_number = order.public_order_number
+            refund_user_id = order.telegram_user_id
+
+            order.payment_status = PaymentStatus.REFUND_PENDING
+            order.updated_at = database.now_utc()
+            session.commit()  # Освобождаем FOR UPDATE lock
+
+    # await Telegram API — ВНЕ блокировки БД
+    if error_msg:
+        await message.answer(error_msg)
+        return
+
+    # 2. Возврат денег через ЮKassa (вне блокировки — async I/O)
+    # ЮKassa автоматически создаёт чек возврата (54-ФЗ)
+    if gateway_oid:
+        from payments.yookassa_payment import refund_yookassa_payment
+        refund_result = await refund_yookassa_payment(gateway_oid, refund_amount)
+        if not refund_result.success:
+            # Откатываем статус обратно (FOR UPDATE — защита от race condition с auto-retry worker)
+            with database.db_session() as session:
+                o = session.scalars(
+                    select(Order).where(
+                        Order.id == refund_order_id,
+                        Order.payment_status == PaymentStatus.REFUND_PENDING,
+                    ).with_for_update()
+                ).first()
+                if o:
+                    o.payment_status = PaymentStatus.PAID
+                    o.updated_at = database.now_utc()
+                session.commit()
+            await message.answer(
+                f"Ошибка возврата ЮKassa: {refund_result.error_message}\n"
+                f"Заказ №{order_number} НЕ возвращён. Обратитесь в ЛК ЮKassa."
             )
+            return
+
+    # 3. Обновить статусы (WHERE payment_status — защита от race condition с auto-retry worker)
+    refund_updated = False
+    with database.db_session() as session:
+        order = session.scalars(
+            select(Order).where(
+                Order.id == refund_order_id,
+                Order.payment_status == PaymentStatus.REFUND_PENDING,
+            ).with_for_update()
+        ).first()
+        if order:
+            order.payment_status = PaymentStatus.REFUNDED
+            order.status = OrderStatus.CANCELLED
+            order.updated_at = database.now_utc()
+            refund_updated = True
+            session.commit()
+
+    if refund_updated:
+        await notify_customer(
+            order,
+            f"Возврат средств по заказу No{refund_order_number}. "
+            f"Сумма {database.rub(refund_amount)} будет возвращена.",
+        )
 
     await message.answer(
         f"✅ Возврат по заказу №{order_number} оформлен.\n"
-        f"Сумма: {database.rub(refund_amount)}\n"
-        f"Фискальный чек возврата поставлен в очередь."
+        f"Сумма: {database.rub(refund_amount)}"
     )
 
 
@@ -860,17 +777,19 @@ async def handle_prep_time(callback: CallbackQuery) -> None:
     try:
         _, raw_order_id, raw_minutes = callback.data.split(":")
         order_id = int(raw_order_id)
-        minutes = int(raw_minutes)
+        minutes = max(1, min(int(raw_minutes), 480))
     except (ValueError, TypeError):
         await callback.answer("Некорректные данные.")
         return
 
     with database.db_session() as session:
         order = database.fetch_order(session, order_id)
-        await notify_customer(
-            order,
-            f"⏰ Заказ №{order.public_order_number} — "
-            f"примерное время готовности: ~{minutes} мин.",
-        )
+        order_number = order.public_order_number
+        order_data = order
 
+    await notify_customer(
+        order_data,
+        f"⏰ Заказ №{order_number} — "
+        f"примерное время готовности: ~{minutes} мин.",
+    )
     await callback.answer(f"Клиент уведомлён: ~{minutes} мин")

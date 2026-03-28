@@ -118,6 +118,7 @@ def seed_menu_items(session: Session) -> None:
         existing.category = item["category"]
         existing.name = item["name"]
         existing.description = item["description"]
+        existing.price = item["price"]
         existing.image_url = f"/api/placeholders/{item['id']}.svg"
         existing.sort_order = item["sort_order"]
     session.commit()

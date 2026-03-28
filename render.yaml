@@ -34,33 +34,21 @@ services:
       - key: KITCHEN_API_KEY
         sync: false
 
-      # ── SBP Sberbank (payment) ──
-      - key: SBP_USERNAME
+      # ── YooKassa (payment + auto-fiscalization) ──
+      - key: YOOKASSA_SHOP_ID
         sync: false
-      - key: SBP_PASSWORD
+      - key: YOOKASSA_SECRET_KEY
         sync: false
-      - key: SBP_TOKEN
-        sync: false
-      - key: SBP_CALLBACK_SECRET
-        sync: false
-      - key: SBP_TEST_MODE
+      - key: YOOKASSA_TEST_MODE
         value: "true"
-
-      # ── ATOL Online (fiscal 54-FZ) ──
-      - key: ATOL_LOGIN
+      - key: YOOKASSA_RETURN_URL
         sync: false
-      - key: ATOL_PASSWORD
+      - key: COMPANY_INN
         sync: false
-      - key: ATOL_GROUP_CODE
+      - key: COMPANY_EMAIL
         sync: false
-      - key: ATOL_INN
-        sync: false
-      - key: ATOL_COMPANY_EMAIL
-        sync: false
-      - key: ATOL_PAYMENT_ADDRESS
-        sync: false
-      - key: ATOL_TEST_MODE
-        value: "true"
+      - key: COMPANY_SNO
+        value: "usn_income"
 
       # ── 1C:Fresh OData (accounting) ──
       - key: FRESH_BASE_URL
