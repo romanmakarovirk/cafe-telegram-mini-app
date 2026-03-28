@@ -25,23 +25,29 @@ from sqlalchemy import select, func
 # При reload main.py заново исполняет from X import *, но X уже в sys.modules
 # со старым состоянием. Нужно сначала reload все подмодули.
 _SUBMODULES = [
-    "config", "models", "menu_data", "database", "security",
-    "serializers", "bot_setup", "bot_handlers", "workers", "routes",
+    "statuses", "config", "models", "menu_data", "database", "security",
+    "serializers", "metrics", "bot_setup", "bot_handlers", "services", "workers",
+    "routes_middleware", "routes_payment", "routes_kitchen", "routes",
 ]
 for _mod_name in _SUBMODULES:
     if _mod_name in sys.modules:
         importlib.reload(sys.modules[_mod_name])
 
 # ── Ре-экспорт всего для совместимости с тестами ─────────────────────────
+from statuses import *  # noqa: F401,F403
 from config import *  # noqa: F401,F403
 from models import *  # noqa: F401,F403
 from menu_data import *  # noqa: F401,F403
 from database import *  # noqa: F401,F403
 from security import *  # noqa: F401,F403
 from serializers import *  # noqa: F401,F403
+from metrics import *  # noqa: F401,F403
 from bot_setup import bot, bot_polling_task, dispatcher, router, ADMIN_CHAT_ID  # noqa: F401
 from bot_handlers import *  # noqa: F401,F403
+from services import *  # noqa: F401,F403
 from workers import *  # noqa: F401,F403
+from routes_payment import *  # noqa: F401,F403
+from routes_kitchen import *  # noqa: F401,F403
 from routes import (  # noqa: F401
     router as api_router,
     SecurityHeadersMiddleware,
@@ -71,8 +77,7 @@ from workers import (
     _keep_alive_ping,
     _stoplist_auto_enable_worker,
     _order_timeout_worker,
-    _fiscal_retry_worker,
-    _sbp_payment_polling_worker,
+    _yookassa_payment_polling_worker,
 )
 
 import database as _database_module
@@ -92,98 +97,145 @@ def __setattr__(name: str, value: Any) -> None:
     globals()[name] = value
 
 
+# ── Lifespan helpers ──────────────────────────────────────────────────────
+
+async def _startup_yookassa_check() -> None:
+    """Startup self-test: проверяем что ЮKassa credentials валидны."""
+    try:
+        from payments.yookassa_payment import yookassa_client
+        if yookassa_client.is_configured:
+            logging.info("YooKassa startup check: OK (credentials настроены)")
+        else:
+            logging.warning("YooKassa startup check: credentials не настроены")
+    except Exception as e:
+        logging.error("YooKassa startup check error: %s", e)
+
+
+def _start_background_workers() -> list[asyncio.Task]:
+    """Запуск фоновых воркеров. Возвращает список задач."""
+    worker_defs = [
+        ("stoplist_worker", _stoplist_auto_enable_worker),
+        ("timeout_worker", _order_timeout_worker),
+        ("yookassa_polling", _yookassa_payment_polling_worker),
+    ]
+    if APP_BASE_URL and not APP_BASE_URL.startswith("http://127.0.0.1"):
+        worker_defs.append(("keepalive", _keep_alive_ping))
+
+    tasks = []
+    for name, factory in worker_defs:
+        _WORKER_FACTORIES[name] = factory
+        tasks.append(asyncio.create_task(factory(), name=name))
+
+    logging.info("Background workers started: %s", ", ".join(_WORKER_FACTORIES.keys()))
+    return tasks
+
+
+async def _start_bot_polling() -> None:
+    """Инициализация бота и запуск polling."""
+    _bot_setup_module.bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    await configure_bot_entrypoints()
+    _bot_setup_module.bot_polling_task = asyncio.create_task(
+        dispatcher.start_polling(
+            _bot_setup_module.bot,
+            allowed_updates=dispatcher.resolve_used_update_types(),
+        )
+    )
+    logging.info("Bot polling started.")
+
+
+async def _bot_polling_watchdog() -> None:
+    """Watchdog: перезапускает polling бота при крэше."""
+    while True:
+        await asyncio.sleep(30)
+        task = _bot_setup_module.bot_polling_task
+        if task and task.done() and not task.cancelled():
+            exc = task.exception() if not task.cancelled() else None
+            logging.critical("Bot polling crashed: %s. Restarting...", exc)
+            from bot_handlers import alert_admin
+            await alert_admin(f"Bot polling упал: {exc}. Перезапускаю...")
+            _bot_setup_module.bot_polling_task = asyncio.create_task(
+                dispatcher.start_polling(
+                    _bot_setup_module.bot,
+                    allowed_updates=dispatcher.resolve_used_update_types(),
+                )
+            )
+
+
+# Worker name → factory function mapping for restart
+_WORKER_FACTORIES: dict[str, Any] = {}
+
+
+async def _workers_watchdog(tasks: list[asyncio.Task]) -> None:
+    """Watchdog: перезапускает упавшие background workers."""
+    while True:
+        await asyncio.sleep(30)
+        for i, task in enumerate(tasks):
+            if task.done() and not task.cancelled():
+                exc = task.exception() if not task.cancelled() else None
+                worker_name = task.get_name()
+                logging.critical("Worker %s crashed: %s. Restarting...", worker_name, exc)
+                factory = _WORKER_FACTORIES.get(worker_name)
+                if factory:
+                    tasks[i] = asyncio.create_task(factory(), name=worker_name)
+                    try:
+                        from bot_handlers import alert_admin
+                        await alert_admin(f"Worker {worker_name} упал: {exc}. Перезапущен.")
+                    except Exception:
+                        logging.exception("Failed to alert admin about worker restart")
+
+
+async def _shutdown(tasks: list[asyncio.Task], watchdog_task: asyncio.Task | None) -> None:
+    """Graceful shutdown: отмена воркеров, бота, закрытие HTTP-клиентов."""
+    for task in tasks:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    if watchdog_task is not None:
+        watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await watchdog_task
+    if _bot_setup_module.bot_polling_task is not None:
+        _bot_setup_module.bot_polling_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _bot_setup_module.bot_polling_task
+    if _bot_setup_module.bot is not None:
+        await _bot_setup_module.bot.session.close()
+    from payments.yookassa_payment import yookassa_client
+    await yookassa_client.close()
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
     validate_production_config()
 
-    # Startup self-test: проверяем что ATOL credentials валидны
     if not DEV_MODE:
-        try:
-            from payments.fiscal import atol_client
-            if atol_client.is_configured:
-                token = await atol_client._get_token()
-                if token:
-                    logging.info("ATOL startup check: OK (token получен)")
-                else:
-                    logging.error("ATOL startup check: FAILED (не удалось получить токен)")
-        except Exception as e:
-            logging.error("ATOL startup check error: %s", e)
+        await _startup_yookassa_check()
 
-    # Фоновые задачи
-    stoplist_task = asyncio.create_task(_stoplist_auto_enable_worker())
-    timeout_task = asyncio.create_task(_order_timeout_worker())
-    fiscal_retry_task = asyncio.create_task(_fiscal_retry_worker())
-    sbp_polling_task = asyncio.create_task(_sbp_payment_polling_worker())
-    logging.info("Background workers started: stoplist auto-enable, order timeout, fiscal retry, sbp polling")
-
-    # Keep-alive self-ping (only when deployed with a real URL)
-    keep_alive_task = None
-    if APP_BASE_URL and not APP_BASE_URL.startswith("http://127.0.0.1"):
-        keep_alive_task = asyncio.create_task(_keep_alive_ping())
+    worker_tasks = _start_background_workers()
 
     if BOT_TOKEN:
-        _bot_setup_module.bot = Bot(
-            token=BOT_TOKEN,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        )
-        await configure_bot_entrypoints()
-        _bot_setup_module.bot_polling_task = asyncio.create_task(
-            dispatcher.start_polling(
-                _bot_setup_module.bot,
-                allowed_updates=dispatcher.resolve_used_update_types(),
-            )
-        )
-        logging.info("Bot polling started.")
+        await _start_bot_polling()
     else:
         logging.warning("BOT_TOKEN is empty. FastAPI will run without Telegram bot.")
 
-    # Bot polling watchdog — restarts polling if it crashes
     watchdog_task = None
     if BOT_TOKEN:
-        async def _bot_polling_watchdog():
-            while True:
-                await asyncio.sleep(30)
-                task = _bot_setup_module.bot_polling_task
-                if task and task.done() and not task.cancelled():
-                    exc = task.exception() if not task.cancelled() else None
-                    logging.critical("Bot polling crashed: %s. Restarting...", exc)
-                    from bot_handlers import alert_admin
-                    await alert_admin(f"Bot polling упал: {exc}. Перезапускаю...")
-                    _bot_setup_module.bot_polling_task = asyncio.create_task(
-                        dispatcher.start_polling(
-                            _bot_setup_module.bot,
-                            allowed_updates=dispatcher.resolve_used_update_types(),
-                        )
-                    )
         watchdog_task = asyncio.create_task(_bot_polling_watchdog())
+
+    workers_watchdog_task = asyncio.create_task(_workers_watchdog(worker_tasks))
 
     try:
         yield
     finally:
-        for task in (stoplist_task, timeout_task, fiscal_retry_task, sbp_polling_task):
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        if keep_alive_task is not None:
-            keep_alive_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await keep_alive_task
-        if watchdog_task is not None:
-            watchdog_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await watchdog_task
-        if _bot_setup_module.bot_polling_task is not None:
-            _bot_setup_module.bot_polling_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await _bot_setup_module.bot_polling_task
-        if _bot_setup_module.bot is not None:
-            await _bot_setup_module.bot.session.close()
-        from payments.fiscal import atol_client
-        from payments.sbp import sbp_client
-        await atol_client.close()
-        await sbp_client.close()
+        workers_watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await workers_watchdog_task
+        await _shutdown(worker_tasks, watchdog_task)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────
