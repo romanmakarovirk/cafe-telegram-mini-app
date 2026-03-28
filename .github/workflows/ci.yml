@@ -34,4 +34,4 @@ jobs:
           pip install pytest pytest-asyncio requests
 
       - name: Run tests
-        run: python -m pytest test_system.py -v
+        run: python -m pytest tests/ -v
