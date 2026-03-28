@@ -5279,9 +5279,15 @@ class TestSecurityHeaders(_AppTestBase):
         assert "content-security-policy" in resp.headers
 
     def test_hsts_header_present(self):
-        """Strict-Transport-Security header присутствует."""
-        resp = self.client.get("/healthz")
-        assert "strict-transport-security" in resp.headers
+        """Strict-Transport-Security header присутствует при HTTPS APP_BASE_URL."""
+        import routes_middleware
+        original = routes_middleware.APP_BASE_URL
+        try:
+            routes_middleware.APP_BASE_URL = "https://example.com"
+            resp = self.client.get("/healthz")
+            assert "strict-transport-security" in resp.headers
+        finally:
+            routes_middleware.APP_BASE_URL = original
 
     def test_x_frame_options_deny(self):
         """X-Frame-Options: DENY."""
